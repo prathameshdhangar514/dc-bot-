@@ -10,7 +10,7 @@ load_dotenv()
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 
 import os, json, datetime, random, asyncio
-from flask import Flask
+from flask import Flask  #hello
 import discord
 from discord.ext import commands
 from threading import Thread
