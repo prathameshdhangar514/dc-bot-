@@ -1,5 +1,3 @@
-#this is a forced test change to trigger git
-#this isto verify real file
 import os, json, datetime, random, asyncio
 from flask import Flask
 import discord
@@ -31,17 +29,17 @@ ROLE_ID_ADMIN = 1393094845479780426  # Replace with actual Admin role ID for tra
 SHOP_ITEMS = {
     "nickname_lock": {
         "price": 5000,
-        "desc": "Locks your nickname from changes",
+        "desc": "🔒 Locks your nickname from changes",
         "level_req": 15
     },
     "temp_admin": {
         "price": 25000,
-        "desc": "Gives temporary admin role for 1 hour",
+        "desc": "⚡ Gives temporary admin role for 1 hour",
         "level_req": 20
     },
     "hmw_role": {
         "price": 50000,
-        "desc": "Grants the prestigious HMW role",
+        "desc": "👑 Grants the prestigious HMW role",
         "level_req": 30
     },
 }
@@ -117,9 +115,13 @@ async def daily(ctx):
         delta = (now - last_time).days
         if delta == 0:
             remaining = 24 - (now - last_time).seconds // 3600
-            return await ctx.send(
-                f"⏳ *You have already claimed your daily power. The spiritual energy replenishes in {remaining} hour(s).*"
+            embed = discord.Embed(
+                title="⏰ **TEMPORAL LOCK ACTIVE**",
+                description=f"```diff\n- ENERGY RESERVES DEPLETED\n+ Regeneration in {remaining}h\n```\n🌟 *The cosmic energy needs time to flow through your soul...*",
+                color=0x2B2D42
             )
+            embed.set_footer(text="⚡ Daily energy recharging...", icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
+            return await ctx.send(embed=embed)
         elif delta == 1:
             streak += 1
         else:
@@ -141,31 +143,47 @@ async def daily(ctx):
     if user_data["xp"] >= required_xp:
         user_data["level"] = current_level + 1
         user_data["xp"] = user_data["xp"] - required_xp
-        level_up_msg = f"\n🎉 **Level Up!** *Your cultivation has advanced to Level {user_data['level']}!*"
+        level_up_msg = f"\n\n🎆 **LEVEL ASCENSION ACHIEVED** 🎆\n```fix\n◆ LEVEL {user_data['level']} UNLOCKED ◆\n```"
 
     user_data.update({
-        "sp": user_data.get("sp", 0) + reward,  # Changed from balance to sp
+        "sp": user_data.get("sp", 0) + reward,
         "last_claim": now.isoformat(),
         "streak": streak
     })
     data[user_id] = user_data
     save_json(DATA_FILE, data)
 
-    bar = ''.join(["🟩" if i < streak else "🟥" for i in range(5)])
+    # Dynamic progress bar with better styling
+    streak_emojis = ['⬛', '🟦', '🟨', '🟧', '🟥']
+    bar = ''.join([streak_emojis[i] if i < streak else '⬛' for i in range(5)])
+
     embed = discord.Embed(
-        title="⚡ Daily Spirit Points Claimed!",
-        description=
-        f"*Hmph... Another day, another harvest of spiritual energy.*{level_up_msg}",
-        color=discord.Color.green())
-    embed.add_field(name="Reward",
-                    value=f"⚡ {reward} Spirit Points\n📈 {xp_gained} XP",
-                    inline=False)
-    embed.add_field(name="Streak Progress", value=f"{bar}", inline=False)
+        title="⚡ **DAILY ENERGY HARVESTED** ⚡",
+        description=f"```css\n[SPIRITUAL ENERGY CHANNELING COMPLETE]\n```\n💫 *The universe grants you its power...* {level_up_msg}",
+        color=0x8A2BE2 if streak >= 3 else 0x4169E1
+    )
+
     embed.add_field(
-        name="Level",
-        value=
-        f"📊 Level {user_data['level']} ({user_data['xp']}/{user_data['level'] * 100} XP)",
-        inline=False)
+        name="🎁 **REWARDS CLAIMED**",
+        value=f"```diff\n+ {reward:,} Spirit Points\n+ {xp_gained} Experience\n```",
+        inline=False
+    )
+
+    embed.add_field(
+        name="🔥 **STREAK PROGRESSION**",
+        value=f"{bar} `{streak}/5`\n{'🌟 *STREAK BONUS ACTIVE!*' if streak >= 3 else '💪 *Keep the momentum going!*'}",
+        inline=False
+    )
+
+    embed.add_field(
+        name="📊 **CULTIVATION STATUS**",
+        value=f"```yaml\nLevel: {user_data['level']}\nXP: {user_data['xp']}/{user_data['level'] * 100}\nProgress: {'█' * (user_data['xp'] * 10 // (user_data['level'] * 100))}{'░' * (10 - (user_data['xp'] * 10 // (user_data['level'] * 100)))}\n```",
+        inline=False
+    )
+
+    embed.set_thumbnail(url=ctx.author.avatar.url if ctx.author.avatar else None)
+    embed.set_footer(text=f"⚡ Next claim available in 24 hours • {ctx.author.display_name}", icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
+
     await ctx.send(embed=embed)
 
 
@@ -181,14 +199,50 @@ async def ssbal(ctx, member: discord.Member = None):
     xp = user_data.get("xp", 0)
     required_xp = level * 100
 
+    # Wealth tier determination
+    if balance >= 100000:
+        tier = "🏆 **LEGEND**"
+        tier_color = 0xFFD700
+    elif balance >= 50000:
+        tier = "💎 **ELITE**"
+        tier_color = 0x9932CC
+    elif balance >= 20000:
+        tier = "⚡ **MASTER**"
+        tier_color = 0x4169E1
+    elif balance >= 5000:
+        tier = "🌟 **RISING**"
+        tier_color = 0x32CD32
+    else:
+        tier = "🔰 **BEGINNER**"
+        tier_color = 0x708090
+
     embed = discord.Embed(
-        title=f"💎 {user.display_name}'s Spirit Stone Treasury",
-        description=f"*The accumulated wealth of spiritual cultivation...*",
-        color=discord.Color.gold())
-    embed.add_field(name="💎 Spirit Stones", value=f"{balance:,}", inline=True)
-    embed.add_field(name="📊 Level",
-                    value=f"{level} ({xp}/{required_xp} XP)",
-                    inline=True)
+        title=f"💰 **{user.display_name.upper()}'S TREASURY** 💰",
+        description=f"```css\n[SPIRITUAL WEALTH ANALYSIS]\n```\n{tier} • *The crystallized power of ages...*",
+        color=tier_color
+    )
+
+    embed.add_field(
+        name="💎 **SPIRIT STONES**",
+        value=f"```fix\n{balance:,} SS\n```",
+        inline=True
+    )
+
+    embed.add_field(
+        name="📈 **CULTIVATION**",
+        value=f"```yaml\nLevel: {level}\nXP: {xp}/{required_xp}\n```",
+        inline=True
+    )
+
+    embed.add_field(
+        name="📊 **PROGRESS BAR**",
+        value=f"```\n{'█' * (xp * 20 // required_xp)}{'░' * (20 - (xp * 20 // required_xp))}\n```",
+        inline=False
+    )
+
+    embed.set_thumbnail(url=user.avatar.url if user.avatar else None)
+    embed.set_footer(text=f"💫 Wealth transcends mortal understanding • ID: {user.id}")
+
     await ctx.send(embed=embed)
 
 
@@ -204,15 +258,50 @@ async def spbal(ctx, member: discord.Member = None):
     xp = user_data.get("xp", 0)
     required_xp = level * 100
 
+    # Energy tier determination
+    if sp >= 50000:
+        energy_tier = "⚡ **STORM**"
+        energy_color = 0xFF1493
+    elif sp >= 25000:
+        energy_tier = "🔥 **INFERNO**"
+        energy_color = 0xFF4500
+    elif sp >= 10000:
+        energy_tier = "💫 **RADIANT**"
+        energy_color = 0x8A2BE2
+    elif sp >= 2000:
+        energy_tier = "🌟 **BRIGHT**"
+        energy_color = 0x4169E1
+    else:
+        energy_tier = "✨ **SPARK**"
+        energy_color = 0x20B2AA
+
     embed = discord.Embed(
-        title=f"⚡ {user.display_name}'s Spirit Point Energy",
-        description=
-        f"*The raw spiritual energy flowing through one's essence...*",
-        color=discord.Color.blue())
-    embed.add_field(name="⚡ Spirit Points", value=f"{sp:,}", inline=True)
-    embed.add_field(name="📊 Level",
-                    value=f"{level} ({xp}/{required_xp} XP)",
-                    inline=True)
+        title=f"⚡ **{user.display_name.upper()}'S ENERGY CORE** ⚡",
+        description=f"```diff\n+ SPIRITUAL POWER ANALYSIS +\n```\n{energy_tier} • *Raw energy flows through your essence...*",
+        color=energy_color
+    )
+
+    embed.add_field(
+        name="⚡ **SPIRIT POINTS**",
+        value=f"```css\n{sp:,} SP\n```",
+        inline=True
+    )
+
+    embed.add_field(
+        name="🎯 **CULTIVATION**",
+        value=f"```yaml\nLevel: {level}\nXP: {xp}/{required_xp}\n```",
+        inline=True
+    )
+
+    embed.add_field(
+        name="🔋 **ENERGY FLOW**",
+        value=f"```\n{'▰' * (min(sp, 10000) * 15 // 10000)}{'▱' * (15 - (min(sp, 10000) * 15 // 10000))}\n```",
+        inline=False
+    )
+
+    embed.set_thumbnail(url=user.avatar.url if user.avatar else None)
+    embed.set_footer(text=f"🌊 Energy is the source of all creation • {user.display_name}")
+
     await ctx.send(embed=embed)
 
 
@@ -228,12 +317,20 @@ async def exchange(ctx, amount: str):
         try:
             exchange_amount = int(amount)
         except:
-            return await ctx.send(
-                "⚠️ *Invalid amount. Specify a number or 'all'.*")
+            embed = discord.Embed(
+                title="❌ **INVALID INPUT**",
+                description="```diff\n- ERROR: Invalid amount detected\n+ Use: !exchange <number> or 'all'\n```",
+                color=0xFF0000
+            )
+            return await ctx.send(embed=embed)
 
     if exchange_amount <= 0 or exchange_amount > user_data.get("sp", 0):
-        return await ctx.send(
-            "🚫 *Insufficient Spirit Points for this exchange.*")
+        embed = discord.Embed(
+            title="🚫 **INSUFFICIENT ENERGY**",
+            description="```css\n[TRANSACTION BLOCKED]\n```\n💔 *Your spiritual energy reserves are inadequate for this conversion...*",
+            color=0xFF4500
+        )
+        return await ctx.send(embed=embed)
 
     user_data["sp"] = user_data.get("sp", 0) - exchange_amount
     user_data["balance"] = user_data.get("balance", 0) + exchange_amount
@@ -241,19 +338,25 @@ async def exchange(ctx, amount: str):
     save_json(DATA_FILE, data)
 
     embed = discord.Embed(
-        title="🔄 Spiritual Energy Exchange",
-        description=f"*The conversion is complete. Energy becomes substance.*",
-        color=discord.Color.purple())
+        title="🔄 **ENERGY TRANSMUTATION COMPLETE** 🔄",
+        description=f"```fix\n◆ SPIRITUAL ALCHEMY SUCCESSFUL ◆\n```\n✨ *Energy crystallizes into eternal stone...*",
+        color=0x9932CC
+    )
+
     embed.add_field(
-        name="Exchanged",
-        value=f"⚡ {exchange_amount:,} SP → 💎 {exchange_amount:,} SS",
-        inline=False)
-    embed.add_field(name="Remaining SP",
-                    value=f"⚡ {user_data['sp']:,}",
-                    inline=True)
-    embed.add_field(name="New SS Balance",
-                    value=f"💎 {user_data['balance']:,}",
-                    inline=True)
+        name="⚗️ **CONVERSION RESULT**",
+        value=f"```diff\n- {exchange_amount:,} Spirit Points\n+ {exchange_amount:,} Spirit Stones\n```",
+        inline=False
+    )
+
+    embed.add_field(
+        name="📊 **UPDATED RESERVES**",
+        value=f"```yaml\nSP Remaining: {user_data['sp']:,}\nSS Balance: {user_data['balance']:,}\n```",
+        inline=False
+    )
+
+    embed.set_footer(text="⚡ → 💎 Perfect 1:1 conversion rate achieved", icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
+
     await ctx.send(embed=embed)
 
 
@@ -265,9 +368,12 @@ async def coinflip(ctx, guess: str, amount: str):
     data = load_json(DATA_FILE)
 
     if guess not in ["heads", "tails"]:
-        return await ctx.send(
-            "⚠️ *Foolish mortal... Your guess must be 'heads' or 'tails'. Do not waste my time.*"
+        embed = discord.Embed(
+            title="⚠️ **INVALID PREDICTION**",
+            description="```diff\n- COSMIC ERROR DETECTED\n+ Valid options: 'heads' or 'tails'\n```\n🎯 *Choose your fate wisely, mortal...*",
+            color=0xFF6347
         )
+        return await ctx.send(embed=embed)
 
     user_data = data.get(user_id, {
         "sp": 0,
@@ -278,9 +384,13 @@ async def coinflip(ctx, guess: str, amount: str):
 
     if user_id in last_gamble_times and (
             now - last_gamble_times[user_id]).total_seconds() < 60:
-        return await ctx.send(
-            "⏳ *Patience... Even the strongest must wait. The spiritual energy needs time to settle.*"
+        embed = discord.Embed(
+            title="⏳ **COSMIC COOLDOWN**",
+            description="```css\n[FATE ENERGY RECHARGING]\n```\n🌌 *The universe needs time to align the cosmic forces...*",
+            color=0x4682B4
         )
+        embed.set_footer(text="⚡ Gambling cooldown: 60 seconds between attempts")
+        return await ctx.send(embed=embed)
 
     if amount.lower() == "all":
         bet = min(sp, 20000)
@@ -288,13 +398,20 @@ async def coinflip(ctx, guess: str, amount: str):
         try:
             bet = int(amount)
         except:
-            return await ctx.send(
-                "⚠️ *Your bet amount is invalid. Numbers only, peasant.*")
+            embed = discord.Embed(
+                title="💸 **INVALID WAGER**",
+                description="```diff\n- BETTING ERROR\n+ Enter a valid number\n```",
+                color=0xFF0000
+            )
+            return await ctx.send(embed=embed)
 
     if bet <= 0 or bet > 20000 or bet > sp:
-        return await ctx.send(
-            "🚫 *Impossible. You either lack the funds or exceed the spiritual limit of 20,000 SP.*"
+        embed = discord.Embed(
+            title="🚫 **WAGER REJECTED**",
+            description="```css\n[INSUFFICIENT FUNDS OR LIMIT EXCEEDED]\n```\n💰 *Maximum bet: 20,000 SP*\n⚡ *Current SP: {:,}*".format(sp),
+            color=0xFF4500
         )
+        return await ctx.send(embed=embed)
 
     flip = random.choice(["heads", "tails"])
     won = (flip == guess)
@@ -310,7 +427,25 @@ async def coinflip(ctx, guess: str, amount: str):
             "losses": 0
         })
         user_data[monthly_key]["wins"] += bet
-        result_msg = "🎉 *Hmph... Fortune favors you this time. Your spiritual power grows.*"
+
+        embed = discord.Embed(
+            title="🎉 **FATE SMILES UPON YOU** 🎉",
+            description=f"```diff\n+ COSMIC VICTORY ACHIEVED +\n```\n🪙 *The coin reveals: **{flip.upper()}***\n✨ *Fortune flows through your spirit...*",
+            color=0x00FF00
+        )
+
+        embed.add_field(
+            name="🏆 **VICTORY SPOILS**",
+            value=f"```css\n+{bet:,} Spirit Points\n```",
+            inline=True
+        )
+
+        embed.add_field(
+            name="💰 **NEW BALANCE**",
+            value=f"```fix\n{user_data['sp']:,} SP\n```",
+            inline=True
+        )
+
     else:
         user_data["sp"] = sp - bet
         user_data[monthly_key] = user_data.get(monthly_key, {
@@ -318,37 +453,72 @@ async def coinflip(ctx, guess: str, amount: str):
             "losses": 0
         })
         user_data[monthly_key]["losses"] += bet
-        result_msg = "💀 *Pathetic... Your greed has cost you dearly. Learn from this failure.*"
+
+        embed = discord.Embed(
+            title="💀 **THE VOID CLAIMS ITS DUE** 💀",
+            description=f"```diff\n- COSMIC DEFEAT ENDURED -\n```\n🪙 *The coin reveals: **{flip.upper()}***\n🌑 *Your greed feeds the endless darkness...*",
+            color=0xFF0000
+        )
+
+        embed.add_field(
+            name="💸 **LOSSES SUFFERED**",
+            value=f"```css\n-{bet:,} Spirit Points\n```",
+            inline=True
+        )
+
+        embed.add_field(
+            name="💔 **REMAINING BALANCE**",
+            value=f"```fix\n{user_data['sp']:,} SP\n```",
+            inline=True
+        )
 
     last_gamble_times[user_id] = now
     data[user_id] = user_data
     save_json(DATA_FILE, data)
 
-    embed = discord.Embed(
-        title="🎰 Coin of Fate",
-        description=
-        f"*The coin spins through the void... and lands on* **{flip}**!",
-        color=discord.Color.green() if won else discord.Color.red())
-    embed.add_field(name="Outcome", value=result_msg, inline=False)
-    embed.add_field(name="New SP Balance",
-                    value=f"⚡ {user_data['sp']:,} SP",
-                    inline=False)
+    embed.add_field(
+        name="🎯 **PREDICTION vs REALITY**",
+        value=f"```yaml\nYour Guess: {guess.title()}\nActual Result: {flip.title()}\nOutcome: {'WIN' if won else 'LOSS'}\n```",
+        inline=False
+    )
+
+    embed.set_footer(text="🎰 The cosmic coin never lies • Gamble responsibly", icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
+
     await ctx.send(embed=embed)
 
 
 @bot.command()
 async def shop(ctx):
     embed = discord.Embed(
-        title="🏪 Gu Chang's Spiritual Emporium",
-        description="*These treasures... only the worthy may possess them.*",
-        color=discord.Color.orange())
+        title="🏪 **GU CHANG'S MYSTICAL EMPORIUM** 🏪",
+        description="```css\n[LEGENDARY ARTIFACTS AWAIT]\n```\n✨ *Only the worthy may claim these treasures of power...*",
+        color=0xFF6B35
+    )
+
     for item, details in SHOP_ITEMS.items():
+        item_name = item.replace('_', ' ').title()
+
+        if details['level_req'] >= 25:
+            rarity = "🌟 **LEGENDARY**"
+        elif details['level_req'] >= 20:
+            rarity = "💎 **EPIC**" 
+        else:
+            rarity = "⚡ **RARE**"
+
         embed.add_field(
-            name=f"✨ {item.replace('_', ' ').title()}",
-            value=
-            f"*{details['desc']}*\n💎 {details['price']:,} SS\n📊 Level {details['level_req']} Required",
-            inline=False)
-    embed.set_footer(text="Use !buy <item> to claim these artifacts of power")
+            name=f"{details['desc'].split()[0]} **{item_name.upper()}**",
+            value=f"{rarity}\n```yaml\nPrice: {details['price']:,} Spirit Stones\nLevel Required: {details['level_req']}\n```\n*{details['desc'][2:]}*",
+            inline=True
+        )
+
+    embed.add_field(
+        name="💳 **PURCHASE INSTRUCTIONS**",
+        value="```fix\n!buy <item_name>\n```\n🛒 *Use the command above to claim your artifact*",
+        inline=False
+    )
+
+    embed.set_footer(text="⚡ Spiritual artifacts enhance your cosmic journey", icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
+
     await ctx.send(embed=embed)
 
 
@@ -360,28 +530,40 @@ async def buy(ctx, item: str):
 
     item = item.lower()
     if item not in SHOP_ITEMS:
-        return await ctx.send(
-            "❌ *Such an item does not exist in my collection. Check the shop again, mortal.*"
+        available_items = ", ".join([i.replace('_', ' ').title() for i in SHOP_ITEMS.keys()])
+        embed = discord.Embed(
+            title="❌ **ARTIFACT NOT FOUND**",
+            description=f"```diff\n- UNKNOWN ITEM REQUESTED\n```\n🔍 **Available Items:** {available_items}",
+            color=0xFF0000
         )
+        return await ctx.send(embed=embed)
 
     item_data = SHOP_ITEMS[item]
     user_level = user_data.get("level", 1)
 
     if user_level < item_data["level_req"]:
-        return await ctx.send(
-            f"🚫 *Your spiritual cultivation is insufficient. Reach Level {item_data['level_req']} before attempting to claim this treasure.*"
+        embed = discord.Embed(
+            title="🚫 **CULTIVATION INSUFFICIENT**",
+            description=f"```css\n[SPIRITUAL POWER TOO WEAK]\n```\n📊 **Required Level:** {item_data['level_req']}\n⚡ **Your Level:** {user_level}\n\n🌟 *Strengthen your cultivation before attempting to claim this artifact...*",
+            color=0xFF4500
         )
+        return await ctx.send(embed=embed)
 
     if user_data["balance"] < item_data["price"]:
-        return await ctx.send(
-            "💸 *Your Spirit Stones are lacking. Gather more power before returning to me.*"
+        shortage = item_data["price"] - user_data["balance"]
+        embed = discord.Embed(
+            title="💸 **INSUFFICIENT SPIRIT STONES**",
+            description=f"```diff\n- TREASURY INADEQUATE\n```\n💰 **Required:** {item_data['price']:,} SS\n💎 **You Have:** {user_data['balance']:,} SS\n📉 **Shortage:** {shortage:,} SS\n\n⚡ *Gather more power before returning...*",
+            color=0xFF6347
         )
+        return await ctx.send(embed=embed)
 
     if item == "nickname_lock":
         nick_locks = load_json(NICK_LOCKS)
         nick_locks[user_id] = True
         save_json(NICK_LOCKS, nick_locks)
-        effect = "🔒 *Your identity is now sealed against change. Well done.*"
+        effect = "🔒 **IDENTITY SEALED** - *Your name is now protected from all changes*"
+        effect_color = 0x4169E1
     elif item == "temp_admin":
         temp_admins = load_json(TEMP_ADMINS)
         expiry = datetime.datetime.utcnow() + datetime.timedelta(hours=1)
@@ -393,30 +575,49 @@ async def buy(ctx, item: str):
         role = ctx.guild.get_role(ROLE_ID_TEMP_ADMIN)
         if role:
             await ctx.author.add_roles(role)
-        effect = "🛡️ *Temporal authority flows through you. Use it wisely... it fades with time.*"
+        effect = "⚡ **TEMPORAL AUTHORITY GRANTED** - *Divine power flows through you for 1 hour*"
+        effect_color = 0xFF1493
     elif item == "hmw_role":
         role = ctx.guild.get_role(ROLE_ID_HMW)
         if role:
             await ctx.author.add_roles(role)
-        effect = "👑 *The HMW blessing is yours. You have proven your worth among the elite.*"
+        effect = "👑 **ELITE STATUS ACHIEVED** - *You have joined the HMW elite circle*"
+        effect_color = 0xFFD700
     else:
-        effect = "🎁 *The artifact is yours. May it serve you well.*"
+        effect = "✨ **ARTIFACT BONDED** - *The power is now yours to wield*"
+        effect_color = 0x9932CC
 
     user_data["balance"] -= item_data["price"]
     data[user_id] = user_data
     save_json(DATA_FILE, data)
 
     embed = discord.Embed(
-        title="✅ Transaction Complete",
-        description="*The exchange is sealed. Power has been transferred.*",
-        color=discord.Color.green())
-    embed.add_field(name="Artifact Claimed",
-                    value=item.replace('_', ' ').title(),
-                    inline=True)
-    embed.add_field(name="Cost",
-                    value=f"💎 {item_data['price']:,} SS",
-                    inline=True)
-    embed.add_field(name="Effect", value=effect, inline=False)
+        title="✅ **TRANSACTION COMPLETED** ✅",
+        description=f"```fix\n◆ ARTIFACT ACQUISITION SUCCESSFUL ◆\n```\n{effect}",
+        color=effect_color
+    )
+
+    embed.add_field(
+        name="🎁 **ARTIFACT CLAIMED**",
+        value=f"```css\n{item.replace('_', ' ').title()}\n```",
+        inline=True
+    )
+
+    embed.add_field(
+        name="💰 **COST PAID**",
+        value=f"```diff\n- {item_data['price']:,} Spirit Stones\n```",
+        inline=True
+    )
+
+    embed.add_field(
+        name="💎 **REMAINING BALANCE**",
+        value=f"```yaml\n{user_data['balance']:,} SS\n```",
+        inline=True
+    )
+
+    embed.set_thumbnail(url=ctx.author.avatar.url if ctx.author.avatar else None)
+    embed.set_footer(text="🌟 Power has been transferred • Use it wisely", icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
+
     await ctx.send(embed=embed)
 
 
@@ -426,9 +627,12 @@ async def gift(ctx, member: discord.Member, amount: int):
     receiver_id = str(member.id)
 
     if sender_id == receiver_id:
-        return await ctx.send(
-            "🚫 *Foolish... One cannot gift power to oneself. The spiritual laws forbid such paradox.*"
+        embed = discord.Embed(
+            title="🚫 **PARADOX DETECTED**",
+            description="```css\n[SELF-TRANSFER IMPOSSIBLE]\n```\n🌌 *The cosmic laws prevent gifting power to oneself...*",
+            color=0xFF4500
         )
+        return await ctx.send(embed=embed)
 
     now = datetime.datetime.utcnow()
     data = load_json(DATA_FILE)
@@ -441,17 +645,23 @@ async def gift(ctx, member: discord.Member, amount: int):
         last_time = datetime.datetime.fromisoformat(last_gift_time)
         if (now - last_time).total_seconds() < 86400:
             remaining = 24 - (now - last_time).seconds // 3600
-            return await ctx.send(
-                f"⏳ *The flow of power must rest. You can gift {member.display_name} again in {remaining} hour(s).*"
+            embed = discord.Embed(
+                title="⏰ **GIFT COOLDOWN ACTIVE**",
+                description=f"```css\n[SPIRITUAL FLOW RESTRICTION]\n```\n🕐 **Cooldown Remaining:** {remaining} hour(s)\n🎁 *The energy flow between souls must rest...*",
+                color=0x4682B4
             )
+            return await ctx.send(embed=embed)
 
     sender_data = data.get(sender_id, {"balance": 0})
     receiver_data = data.get(receiver_id, {"balance": 0})
 
     if amount <= 0 or sender_data["balance"] < amount:
-        return await ctx.send(
-            "🚫 *Impossible. Either your offering is worthless or your treasury lacks the required Spirit Stones.*"
+        embed = discord.Embed(
+            title="💸 **TRANSFER FAILED**",
+            description="```diff\n- INSUFFICIENT SPIRIT STONES\n```\n💰 **Your Balance:** {:,} SS\n🎯 **Amount Requested:** {:,} SS\n\n⚡ *Your generosity exceeds your treasury...*".format(sender_data["balance"], amount),
+            color=0xFF0000
         )
+        return await ctx.send(embed=embed)
 
     sender_data["balance"] -= amount
     receiver_data["balance"] += amount
@@ -459,22 +669,35 @@ async def gift(ctx, member: discord.Member, amount: int):
     data[receiver_id] = receiver_data
     save_json(DATA_FILE, data)
 
-    # Update gift tracker
+# Update gift tracker
     gift_data[pair_key] = now.isoformat()
     save_json(GIFT_TRACKER, gift_data)
 
     embed = discord.Embed(
-        title="🎁 Spiritual Transfer Complete",
-        description=
-        "*The flow of power has been redirected. Generosity... or perhaps strategy?*",
-        color=discord.Color.purple())
-    embed.add_field(name="Benefactor",
-                    value=ctx.author.display_name,
-                    inline=True)
-    embed.add_field(name="Recipient", value=member.display_name, inline=True)
-    embed.add_field(name="Transfer Amount",
-                    value=f"💎 {amount:,} Spirit Stones",
-                    inline=False)
+        title="✨ 𝕊𝕡𝕚𝕣𝕚𝕥𝕦𝕒𝕝 ℂ𝕣𝕒𝗇𝗌𝖿𝖾𝗋 ℂ𝗈𝗆𝗉𝗅𝖾𝗍𝖾 ✨",
+        description="```fix\n⚡ The ethereal energies flow between souls... ⚡\n```\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n*🌟 A generous spirit has shared their power 🌟*",
+        color=0x8B00FF)
+
+    embed.add_field(
+        name="🎭 **BENEFACTOR**",
+        value=f"```ansi\n\u001b[0;35m{ctx.author.display_name}\u001b[0m\n```",
+        inline=True
+    )
+    embed.add_field(
+        name="🎯 **RECIPIENT**", 
+        value=f"```ansi\n\u001b[0;36m{member.display_name}\u001b[0m\n```",
+        inline=True
+    )
+    embed.add_field(
+        name="💰 **TRANSFER AMOUNT**",
+        value=f"```fix\n💎 {amount:,} Spirit Stones\n```",
+        inline=False
+    )
+
+    embed.set_thumbnail(url="https://cdn.discordapp.com/emojis/123456789.gif")  # Optional: add animated gem
+    embed.set_footer(text="⚡ Spiritual Energy Transfer System ⚡", icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
+    embed.timestamp = datetime.datetime.utcnow()
+
     await ctx.send(embed=embed)
 
 
@@ -484,7 +707,7 @@ async def transfer(ctx, member: discord.Member, amount: int):
     admin_role = ctx.guild.get_role(ROLE_ID_ADMIN)
     if admin_role not in ctx.author.roles:
         return await ctx.send(
-            "🚫 *You lack the divine authority to perform such transfers. Only the chosen administrators may wield this power.*"
+            "```diff\n- 🚫 ACCESS DENIED 🚫\n- Divine authority required for such transfers\n```"
         )
 
     receiver_id = str(member.id)
@@ -493,7 +716,7 @@ async def transfer(ctx, member: discord.Member, amount: int):
 
     if amount <= 0:
         return await ctx.send(
-            "🚫 *The transfer amount must be positive. Do not waste divine power on emptiness.*"
+            "```diff\n- ❌ INVALID AMOUNT ❌\n- Positive values only, mortal\n```"
         )
 
     receiver_data["balance"] = receiver_data.get("balance", 0) + amount
@@ -501,20 +724,34 @@ async def transfer(ctx, member: discord.Member, amount: int):
     save_json(DATA_FILE, data)
 
     embed = discord.Embed(
-        title="⚡ Divine Transfer Complete",
-        description=
-        "*The administrator's will has been enforced. Power flows from the eternal treasury.*",
-        color=discord.Color.red())
-    embed.add_field(name="Administrator",
-                    value=ctx.author.display_name,
-                    inline=True)
-    embed.add_field(name="Recipient", value=member.display_name, inline=True)
-    embed.add_field(name="Amount Granted",
-                    value=f"💎 {amount:,} Spirit Stones",
-                    inline=False)
-    embed.add_field(name="New Balance",
-                    value=f"💎 {receiver_data['balance']:,} SS",
-                    inline=False)
+        title="⚡ 𝕯𝖎𝖛𝖎𝖓𝖊 𝕬𝖉𝖒𝖎𝖓 𝕿𝖗𝖆𝗇𝗌𝖿𝖾𝗋 ⚡",
+        description="```fix\n🔥 ADMINISTRATOR POWER ACTIVATED 🔥\n```\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n*⚡ The eternal treasury flows with divine will ⚡*",
+        color=0xFF0040)
+
+    embed.add_field(
+        name="👑 **ADMINISTRATOR**",
+        value=f"```ansi\n\u001b[0;31m{ctx.author.display_name}\u001b[0m\n```",
+        inline=True
+    )
+    embed.add_field(
+        name="🎯 **RECIPIENT**",
+        value=f"```ansi\n\u001b[0;32m{member.display_name}\u001b[0m\n```",
+        inline=True
+    )
+    embed.add_field(
+        name="💸 **AMOUNT GRANTED**",
+        value=f"```yaml\n💎 {amount:,} Spirit Stones\n```",
+        inline=False
+    )
+    embed.add_field(
+        name="💰 **NEW BALANCE**",
+        value=f"```fix\n💎 {receiver_data['balance']:,} SS\n```",
+        inline=False
+    )
+
+    embed.set_footer(text="⚡ Divine Administrative System ⚡", icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
+    embed.timestamp = datetime.datetime.utcnow()
+
     await ctx.send(embed=embed)
 
 
@@ -526,18 +763,29 @@ async def top(ctx):
                          reverse=True)[:10]
 
     embed = discord.Embed(
-        title="🏆 Hierarchy of Spiritual Power",
-        description=
-        "*These are the ones who have accumulated true strength...*",
-        color=discord.Color.gold())
+        title="🏆 𝕊𝕡𝕚𝕣𝕚𝕥𝕦𝕒𝕝 ℍ𝕚𝖊𝗋𝖺𝗋𝖼𝗁𝗒 🏆",
+        description="```fix\n🌟 THE MOST POWERFUL SPIRITUAL CULTIVATORS 🌟\n```\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n*⚡ These souls have transcended mortal limitations ⚡*",
+        color=0xFFD700)
+
+    medal_emojis = ["🥇", "🥈", "🥉", "🏅", "⭐", "💫", "✨", "🔸", "🔹", "🔺"]
+
     for i, (uid, user_data) in enumerate(leaderboard, start=1):
         user = ctx.guild.get_member(int(uid))
         name = user.display_name if user else "Unknown Spirit"
         level = user_data.get("level", 1)
+        balance = user_data.get('balance', 0)
+
+        medal = medal_emojis[i-1] if i <= 10 else "💠"
+
         embed.add_field(
-            name=f"#{i} - {name}",
-            value=f"💎 {user_data.get('balance', 0):,} SS | 📊 Level {level}",
-            inline=False)
+            name=f"{medal} **RANK #{i} - {name}**",
+            value=f"```ansi\n\u001b[0;33m💎 {balance:,} Spirit Stones\u001b[0m\n\u001b[0;36m📊 Level {level}\u001b[0m\n```",
+            inline=False
+        )
+
+    embed.set_footer(text="⚡ Updated Spiritual Rankings ⚡")
+    embed.timestamp = datetime.datetime.utcnow()
+
     await ctx.send(embed=embed)
 
 
@@ -559,22 +807,33 @@ async def lucky(ctx):
     lucky_users = lucky_users[:10]
 
     embed = discord.Embed(
-        title="🍀 Fortune's Chosen Ones",
-        description="*Those blessed by the gambling spirits this month...*",
-        color=discord.Color.green())
+        title="🍀 𝔽𝕠𝗋𝗍𝗎𝗇𝖾'𝗌 ℂ𝗁𝗈𝗌𝖾𝗇 𝔒𝗇𝖾𝗌 🍀",
+        description="```fix\n🎰 BLESSED BY THE GAMBLING SPIRITS 🎰\n```\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n*🌟 Fortune smiles upon these brave souls 🌟*",
+        color=0x00FF7F)
 
     if not lucky_users:
         embed.add_field(
-            name="No Data",
-            value="*The month is young... or fortune has abandoned all.*",
-            inline=False)
+            name="📊 **NO FORTUNE FOUND**",
+            value="```diff\n- The month is young... or luck has fled\n```",
+            inline=False
+        )
     else:
+        luck_emojis = ["🍀", "🎯", "⚡", "✨", "💫", "🌟", "💥", "🔥", "⭐", "🎊"]
+
         for i, (uid, wins) in enumerate(lucky_users, start=1):
             user = ctx.guild.get_member(int(uid))
             name = user.display_name if user else "Unknown Spirit"
-            embed.add_field(name=f"#{i} - {name}",
-                            value=f"⚡ {wins:,} SP won through gambling",
-                            inline=False)
+            emoji = luck_emojis[i-1] if i <= 10 else "🎲"
+
+            embed.add_field(
+                name=f"{emoji} **#{i} - {name}**",
+                value=f"```ansi\n\u001b[0;32m⚡ {wins:,} SP Won Through Gambling\u001b[0m\n```",
+                inline=False
+            )
+
+    embed.set_footer(text=f"🎰 Monthly Fortune Report - {current_month} 🎰")
+    embed.timestamp = datetime.datetime.utcnow()
+
     await ctx.send(embed=embed)
 
 
@@ -596,73 +855,68 @@ async def unlucky(ctx):
     unlucky_users = unlucky_users[:10]
 
     embed = discord.Embed(
-        title="💀 Cursed by Misfortune",
-        description=
-        "*Those who have fed the void with their greed this month...*",
-        color=discord.Color.red())
+        title="💀 ℭ𝗎𝗋𝗌𝖾𝖽 𝖻𝗒 𝔐𝗂𝗌𝖿𝗈𝗋𝗍𝗎𝗇𝖾 💀",
+        description="```fix\n🔥 CONSUMED BY GAMBLING'S VOID 🔥\n```\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n*💀 These souls have fed the darkness with greed 💀*",
+        color=0xFF1744)
 
     if not unlucky_users:
         embed.add_field(
-            name="No Data",
-            value="*Perhaps wisdom has prevailed... or none dared to gamble.*",
-            inline=False)
+            name="📊 **NO MISFORTUNE RECORDED**",
+            value="```diff\n+ Wisdom prevailed... or none dared gamble\n```",
+            inline=False
+        )
     else:
+        curse_emojis = ["💀", "⚰️", "🩸", "💥", "🔥", "⚡", "💔", "🖤", "⛈️", "🌪️"]
+
         for i, (uid, losses) in enumerate(unlucky_users, start=1):
             user = ctx.guild.get_member(int(uid))
             name = user.display_name if user else "Unknown Spirit"
-            embed.add_field(name=f"#{i} - {name}",
-                            value=f"💸 {losses:,} SP lost to the void",
-                            inline=False)
+            emoji = curse_emojis[i-1] if i <= 10 else "💸"
+
+            embed.add_field(
+                name=f"{emoji} **#{i} - {name}**",
+                value=f"```ansi\n\u001b[0;31m💸 {losses:,} SP Lost to the Void\u001b[0m\n```",
+                inline=False
+            )
+
+    embed.set_footer(text=f"💀 Monthly Misfortune Report - {current_month} 💀")
+    embed.timestamp = datetime.datetime.utcnow()
+
     await ctx.send(embed=embed)
 
 
 @bot.command(name="help")
 async def custom_help(ctx):
     embed = discord.Embed(
-        title="📜 Gu Chang's Spiritual Codex",
-        description=
-        "*These are the pathways to power, mortal. Study them well.*",
-        color=discord.Color.blue())
-    embed.add_field(name="!daily",
-                    value="*Claim your daily tribute of Spirit Points*",
-                    inline=False)
-    embed.add_field(name="!ssbal",
-                    value="*Examine your Spirit Stone treasury*",
-                    inline=False)
-    embed.add_field(name="!spbal",
-                    value="*Check your Spirit Point energy reserves*",
-                    inline=False)
-    embed.add_field(
-        name="!exchange <amount/all>",
-        value="*Convert Spirit Points to Spirit Stones (1:1 ratio)*",
-        inline=False)
-    embed.add_field(name="!coinflip <heads/tails> <amount>",
-                    value="*Test your fate against the cosmic coin*",
-                    inline=False)
-    embed.add_field(name="!shop",
-                    value="*Browse my collection of spiritual artifacts*",
-                    inline=False)
-    embed.add_field(name="!buy <item>",
-                    value="*Claim an artifact if you prove worthy*",
-                    inline=False)
-    embed.add_field(name="!gift <user> <amount>",
-                    value="*Transfer Spirit Stones to another*",
-                    inline=False)
-    embed.add_field(name="!transfer <user> <amount>",
-                    value="*[ADMIN ONLY] Grant unlimited Spirit Stones*",
-                    inline=False)
-    embed.add_field(name="!top",
-                    value="*Witness the hierarchy of spiritual power*",
-                    inline=False)
-    embed.add_field(name="!lucky",
-                    value="*See who fortune has smiled upon this month*",
-                    inline=False)
-    embed.add_field(name="!unlucky",
-                    value="*Observe those cursed by gambling misfortune*",
-                    inline=False)
-    embed.set_footer(
-        text=
-        "*Master these commands, and spiritual ascension shall be yours...*")
+        title="📜 𝔾𝕦 ℂ𝗁𝖺𝗇𝗀'𝗌 𝔖𝔭𝔦𝗋𝔦𝗍𝗎𝖺𝔩 ℭ𝗈𝖽𝖾𝗑 📜",
+        description="```fix\n⚡ PATHWAYS TO ULTIMATE POWER ⚡\n```\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n*🌟 Master these commands and ascend to greatness 🌟*",
+        color=0x7B68EE)
+
+    commands = [
+        ("💰 !daily", "Claim your daily spiritual tribute"),
+        ("💎 !ssbal", "Check your Spirit Stone treasury"),
+        ("⚡ !spbal", "View your Spirit Point reserves"),
+        ("🔄 !exchange <amount/all>", "Convert SP to SS (1:1 ratio)"),
+        ("🎰 !coinflip <heads/tails> <amount>", "Test fate against the cosmic coin"),
+        ("🛍️ !shop", "Browse spiritual artifacts collection"),
+        ("🛒 !buy <item>", "Purchase mystical artifacts"),
+        ("✨ !gift <user> <amount>", "Transfer SS to another soul"),
+        ("👑 !transfer <user> <amount>", "[ADMIN] Grant unlimited SS"),
+        ("🏆 !top", "View the spiritual hierarchy"),
+        ("🍀 !lucky", "See fortune's chosen ones"),
+        ("💀 !unlucky", "Witness the cursed gamblers")
+    ]
+
+    for i, (cmd, desc) in enumerate(commands):
+        embed.add_field(
+            name=f"**{cmd}**",
+            value=f"```ansi\n\u001b[0;36m{desc}\u001b[0m\n```",
+            inline=False
+        )
+
+    embed.set_footer(text="⚡ Spiritual Ascension Codex ⚡ | Master these powers wisely")
+    embed.timestamp = datetime.datetime.utcnow()
+
     await ctx.send(embed=embed)
 
 
