@@ -3,3 +3,5 @@ Flask
 gunicorn
 python-dotenv
 
+requests
+PyNaCl==1.5.0
