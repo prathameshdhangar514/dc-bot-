@@ -1,4 +1,6 @@
 import os, sqlite3, random, asyncio
+import datetime
+import time
 from flask import Flask
 import discord
 from discord.ext import commands, tasks
@@ -6,20 +8,38 @@ from threading import Thread
 from dotenv import load_dotenv
 import base64
 import json
+import signal
+import sys
+import aiohttp
 import requests
 import shutil
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import logging
 import asyncio
 from collections import defaultdict
-import time
-import functools
+import functools  # This should already be there, but verify it exists
 
 # Set up logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+
+def signal_handler(signum, frame):
+    """Handle shutdown signals gracefully"""
+    logger.info("🛑 Shutdown signal received, closing bot...")
+    try:
+        if bot:
+            asyncio.create_task(bot.close())
+    except:
+        pass
+    sys.exit(0)
+
+
+# Register signal handlers
+signal.signal(signal.SIGTERM, signal_handler)
+signal.signal(signal.SIGINT, signal_handler)
 
 # Rate limiting configuration
 COMMAND_COOLDOWNS = {
@@ -196,6 +216,28 @@ def cooldown_check(command_name=None):
     return decorator
 
 
+def safe_command_wrapper(func):
+    """Decorator to add extra error protection to critical commands"""
+
+    @functools.wraps(func)
+    async def wrapper(ctx, *args, **kwargs):
+        try:
+            await func(ctx, *args, **kwargs)
+        except Exception as e:
+            logger.error(f"❌ Critical error in {func.__name__}: {e}",
+                         exc_info=True)
+
+            # Send a simple error message without fancy embeds
+            try:
+                await ctx.send(
+                    "❌ An unexpected error occurred. The issue has been logged."
+                )
+            except:
+                pass  # If we can't even send a simple message, just log it
+
+    return wrapper
+
+
 # Enhanced message sending with rate limiting
 async def safe_send(ctx, content=None, embed=None, **kwargs):
     """Safely send messages with rate limiting"""
@@ -230,29 +272,45 @@ async def safe_add_roles(member, *roles):
 
 # Global error handler for uncaught exceptions
 async def handle_global_error(ctx, error):
-    """Handle global command errors"""
+    """Handle global command errors with fallback protection"""
     logger.error(f"❌ Global error in {ctx.command}: {error}")
 
     if isinstance(error, commands.CommandOnCooldown):
-        return  # Already handled by our cooldown system
+        return  # Already handled by cooldown system
 
-    embed = discord.Embed(
-        title="💥 **SYSTEM ERROR**",
-        description=
-        "```diff\n- A system error occurred\n+ Our cosmic engineers have been notified\n```\n🔧 *Please try again in a few moments...*",
-        color=0xFF1744)
+    try:
+        embed = discord.Embed(
+            title="💥 **SYSTEM ERROR**",
+            description=
+            "```diff\n- A system error occurred\n+ Our cosmic engineers have been notified\n```\n🔧 *Please try again in a few moments...*",
+            color=0xFF1744)
 
-    embed.add_field(name="🆘 **Error Code**",
-                    value=f"```\n{type(error).__name__}\n```",
-                    inline=True)
+        embed.add_field(name="🆘 **Error Code**",
+                        value=f"```\n{type(error).__name__}\n```",
+                        inline=True)
 
-    embed.set_footer(
-        text="🛠️ If this persists, contact an administrator",
-        icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
+        embed.set_footer(
+            text="🛠️ If this persists, contact an administrator",
+            icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
 
-    result, send_error = await safe_send(ctx, embed=embed)
-    if send_error:
-        logger.error(f"❌ Failed to send global error message: {send_error}")
+        # Use a simple send without the safe_send wrapper to prevent recursion
+        try:
+            await ctx.send(embed=embed)
+        except Exception as send_error:
+            # Fallback: try sending a simple text message
+            try:
+                await ctx.send(
+                    "❌ A system error occurred. Please contact an administrator."
+                )
+            except:
+                # Ultimate fallback: just log it
+                logger.error(
+                    f"❌ Could not send error message to user {ctx.author.id}")
+                pass
+
+    except Exception as handler_error:
+        # Don't let the error handler itself crash the bot
+        logger.error(f"❌ Error in global error handler: {handler_error}")
 
 
 load_dotenv()
@@ -402,33 +460,40 @@ def get_user_data(user_id):
 
 def update_user_data(user_id, **kwargs):
     """Update user data"""
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
 
-    # Get current data for transaction log
-    current_data = get_user_data(user_id)
+        # Get current data for transaction log
+        current_data = get_user_data(user_id)
 
-    # Build update query dynamically
-    fields = []
-    values = []
-    for key, value in kwargs.items():
-        if key in ['balance', 'sp', 'last_claim', 'streak']:
-            fields.append(f"{key} = ?")
-            values.append(value)
+        # Build update query dynamically
+        fields = []
+        values = []
+        for key, value in kwargs.items():
+            if key in ['balance', 'sp', 'last_claim', 'streak']:
+                fields.append(f"{key} = ?")
+                values.append(value)
 
-    if fields:
-        values.append(user_id)
-        query = f"UPDATE users SET {', '.join(fields)} WHERE user_id = ?"
-        cursor.execute(query, values)
-        conn.commit()
+        if fields:
+            values.append(user_id)
+            query = f"UPDATE users SET {', '.join(fields)} WHERE user_id = ?"
+            cursor.execute(query, values)
+            conn.commit()
 
-    conn.close()
+        conn.close()
+        return True
+    except Exception as e:
+        logger.error(f"❌ Database update error: {e}")
+        if 'conn' in locals():
+            conn.close()
+        return False
 
 
 def get_monthly_stats(user_id, month=None):
     """Get monthly gambling stats for user"""
     if not month:
-        month = datetime.datetime.utcnow().strftime("%Y-%m")
+        month = datetime.now(timezone.utc).strftime("%Y-%m")
 
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
@@ -447,10 +512,47 @@ def get_monthly_stats(user_id, month=None):
     return {'wins': 0, 'losses': 0}
 
 
+async def test_bot_connection():
+    """Test bot connection before full startup"""
+    try:
+        async with aiohttp.ClientSession() as session:
+            headers = {"Authorization": f"Bot {TOKEN}"}
+            async with session.get("https://discord.com/api/v10/users/@me",
+                                   headers=headers) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    logger.info(
+                        f"✅ Bot token valid for: {data.get('username')}")
+                    return True
+                else:
+                    logger.error(f"❌ Invalid bot token: {resp.status}")
+                    return False
+    except Exception as e:
+        logger.error(f"❌ Connection test failed: {e}")
+        return False
+
+
+async def startup_backup():
+    """Create backup on startup"""
+    try:
+        if github_backup and os.path.exists(DB_FILE):
+            backup_file = create_backup_with_cloud_storage()
+            if backup_file:
+                success, result = github_backup.upload_backup_to_github(
+                    backup_file)
+                if success:
+                    logger.info("✅ Startup backup created")
+                    return True
+        return False
+    except Exception as e:
+        logger.error(f"❌ Startup backup failed: {e}")
+        return False
+
+
 def update_monthly_stats(user_id, win_amount=0, loss_amount=0, month=None):
     """Update monthly gambling stats"""
     if not month:
-        month = datetime.datetime.utcnow().strftime("%Y-%m")
+        month = datetime.now(timezone.utc).strftime("%Y-%m")
 
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
@@ -606,7 +708,7 @@ def create_backup_with_cloud_storage():
             os.makedirs("backups")
 
         # Generate backup filename with timestamp
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         backup_filename = f"backup_{timestamp}.db"
         backup_path = os.path.join("backups", backup_filename)
 
@@ -651,7 +753,7 @@ def restore_from_cloud():
             latest_backup = os.path.join("backups", backup_files[0])
 
         # Backup current database before restore
-        current_backup = f"pre_restore_backup_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.db"
+        current_backup = f"pre_restore_backup_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.db"
         shutil.copy2(DB_FILE, os.path.join("backups", current_backup))
 
         # Restore from backup
@@ -814,7 +916,7 @@ def get_leaderboard(field='balance', limit=10):
 def get_top_losers(month=None, limit=10):
     """Get top losers for the month"""
     if not month:
-        month = datetime.datetime.utcnow().strftime("%Y-%m")
+        month = datetime.now(timezone.utc).strftime("%Y-%m")
 
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
@@ -904,7 +1006,7 @@ def reset_monthly_stats():
     cursor = conn.cursor()
 
     # Clear previous month's stats (keep only current month)
-    current_month = datetime.utcnow().strftime("%Y-%m")
+    current_month = datetime.now(timezone.utc).strftime("%Y-%m")
     cursor.execute('DELETE FROM monthly_stats WHERE month != ?',
                    (current_month, ))
 
@@ -970,7 +1072,7 @@ async def perform_monthly_conversion():
 async def monthly_conversion_check():
     """Check if it's time for monthly conversion (1st of month, 00:00 UTC)"""
     try:
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         # Check if it's the 1st day of the month and between 00:00-01:00
         if now.day == 1 and now.hour == 0:
@@ -1081,6 +1183,31 @@ async def api_health_monitor():
         logger.error(f"❌ API health monitor error: {e}")
 
 
+async def main():
+    """Main async function with proper startup sequence"""
+    logger.info("🚀 Starting Discord Bot...")
+
+    # Test connection first
+    if not await test_bot_connection():
+        logger.error("❌ Bot token validation failed")
+        return
+
+    # Create startup backup
+    await startup_backup()
+
+    # Start the bot
+    try:
+        await bot.start(TOKEN)
+    except KeyboardInterrupt:
+        logger.info("🛑 Keyboard interrupt received")
+    except Exception as e:
+        logger.error(f"❌ Bot error: {e}")
+    finally:
+        if not bot.is_closed():
+            await bot.close()
+        logger.info("🛑 Bot shutdown complete")
+
+
 # ==== Flask Setup ====
 app = Flask(__name__)
 
@@ -1119,33 +1246,11 @@ last_gamble_times = {}
 
 # ==== Background Task for Temp Admin Management ====
 @tasks.loop(minutes=5)
-async def remove_expired_admins():
+async def remove_expired_items():
+    """Remove expired temp admin roles and name changes"""
+    # Handle temp admins
     temp_admins = get_temp_admins()
-    now = datetime.utcnow()
-
-    for admin_data in temp_admins:
-        expire_time = datetime.fromisoformat(admin_data["expires_at"])
-        if now >= expire_time:
-            # Remove role from user
-            try:
-                guild = bot.get_guild(int(admin_data["guild_id"]))
-                if guild:
-                    member = guild.get_member(int(admin_data["user_id"]))
-                    role = guild.get_role(ROLE_ID_TEMP_ADMIN)
-                    if member and role:
-                        await member.remove_roles(role)
-
-                # Remove from database
-                remove_temp_admin(admin_data["user_id"])
-            except Exception as e:
-                print(f"Error removing temp admin role: {e}")
-
-
-@tasks.loop(minutes=5)
-async def remove_expired_items():  # RENAME THIS FUNCTION
-    # Existing temp admin code stays the same
-    temp_admins = get_temp_admins()
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     for admin_data in temp_admins:
         expire_time = datetime.fromisoformat(admin_data["expires_at"])
@@ -1156,12 +1261,12 @@ async def remove_expired_items():  # RENAME THIS FUNCTION
                     member = guild.get_member(int(admin_data["user_id"]))
                     role = guild.get_role(ROLE_ID_TEMP_ADMIN)
                     if member and role:
-                        await member.remove_roles(role)
+                        result, error = await safe_remove_roles(member, role)
                 remove_temp_admin(admin_data["user_id"])
             except Exception as e:
-                print(f"Error removing temp admin role: {e}")
+                logger.error(f"Error removing temp admin role: {e}")
 
-    # ADD THIS NEW SECTION FOR NAME CHANGES
+    # Handle name changes
     active_name_changes = get_active_name_changes()
 
     for change in active_name_changes:
@@ -1172,14 +1277,12 @@ async def remove_expired_items():  # RENAME THIS FUNCTION
                 if guild:
                     member = guild.get_member(int(change["target_id"]))
                     if member:
-                        # Restore original nickname
                         original_nick = change["original_nickname"]
                         if original_nick == "None":
                             original_nick = None
                         await member.edit(nick=original_nick,
                                           reason="Name change card expired")
 
-                # Remove the record
                 remove_name_change_card(change["id"])
                 logger.info(
                     f"✅ Name change expired for user {change['target_id']}")
@@ -1189,17 +1292,23 @@ async def remove_expired_items():  # RENAME THIS FUNCTION
 
 
 # ==== Bot Events ====
+# REPLACE your existing on_ready function with this enhanced version:
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
     logger.info(f"✅ Bot logged in as {bot.user}")
 
     # Start background tasks
-    remove_expired_items.start()
-    remove_expired_admins.start()
-    auto_backup.start()
-    monthly_conversion_check.start()
-    api_health_monitor.start()
+    if not remove_expired_items.is_running():
+        remove_expired_items.start()
+    if not auto_backup.is_running():
+        auto_backup.start()
+    if not monthly_conversion_check.is_running():
+        monthly_conversion_check.start()
+    if not api_health_monitor.is_running():
+        api_health_monitor.start()
+
+    logger.info("✅ All background tasks started")
 
     # Try to create initial backup
     try:
@@ -1221,30 +1330,118 @@ async def on_error(event, *args, **kwargs):
 
 @bot.event
 async def on_command_error(ctx, error):
+    """Enhanced command error handler with comprehensive coverage"""
+
+    # Handle cooldown errors (already handled by decorator)
     if isinstance(error, commands.CommandOnCooldown):
-        await ctx.send(
-            f"⏰ Command on cooldown. Try again in {error.retry_after:.2f}s")
-
-    elif isinstance(error, commands.MissingPermissions):
-        await ctx.send("🚫 You don't have permission to use this command.")
-
-    elif isinstance(error, commands.CheckFailure):
-        await ctx.send(
-            "🚫 You don't meet the conditions required to use this command.")
-
-    elif isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send(
-            "❌ Missing required argument. Use `!help` for correct usage.")
-
-    elif isinstance(error, commands.CommandNotFound):
-        # You can either silently ignore, log it, or notify the user
-        # Uncomment the line below if you want to tell the user
-        # await ctx.send("❓ Unknown command. Use `!help` to see available commands.")
+        # Don't send duplicate cooldown messages since decorator handles this
         return
 
+    # Handle permission errors
+    elif isinstance(error, commands.MissingPermissions):
+        embed = discord.Embed(
+            title="🚫 **ACCESS DENIED**",
+            description=
+            "```diff\n- Insufficient permissions\n+ Administrator access required\n```",
+            color=0xFF0000)
+
+        try:
+            await ctx.send(embed=embed)
+        except:
+            await ctx.send("🚫 You don't have permission to use this command.")
+
+    # Handle missing arguments
+    elif isinstance(error, commands.MissingRequiredArgument):
+        embed = discord.Embed(
+            title="❌ **MISSING ARGUMENT**",
+            description=
+            f"```diff\n- Missing required parameter: {error.param.name}\n+ Use !help for correct usage\n```",
+            color=0xFF4500)
+
+        try:
+            await ctx.send(embed=embed)
+        except:
+            await ctx.send(f"❌ Missing required argument: {error.param.name}")
+
+    # Handle bad arguments (wrong type, etc.)
+    elif isinstance(error, commands.BadArgument):
+        embed = discord.Embed(
+            title="⚠️ **INVALID ARGUMENT**",
+            description=
+            "```diff\n- Invalid argument provided\n+ Check your input and try again\n```",
+            color=0xFF6347)
+
+        try:
+            await ctx.send(embed=embed)
+        except:
+            await ctx.send("⚠️ Invalid argument provided.")
+
+    # Handle command not found (optional - you can remove this to ignore)
+    elif isinstance(error, commands.CommandNotFound):
+        # Silently ignore unknown commands
+        return
+
+    # Handle user input errors
+    elif isinstance(error, commands.UserInputError):
+        embed = discord.Embed(
+            title="📝 **INPUT ERROR**",
+            description=
+            "```diff\n- Invalid input format\n+ Use !help for command examples\n```",
+            color=0xFFB347)
+
+        try:
+            await ctx.send(embed=embed)
+        except:
+            await ctx.send("📝 Invalid input. Use !help for guidance.")
+
+    # Handle bot missing permissions
+    elif isinstance(error, commands.BotMissingPermissions):
+        missing_perms = ', '.join(error.missing_permissions)
+        embed = discord.Embed(
+            title="🤖 **BOT PERMISSION ERROR**",
+            description=
+            f"```diff\n- Bot lacks required permissions\n+ Missing: {missing_perms}\n```",
+            color=0xFF1744)
+
+        try:
+            await ctx.send(embed=embed)
+        except:
+            await ctx.send(f"🤖 Bot missing permissions: {missing_perms}")
+
+    # Handle check failures (custom command checks)
+    elif isinstance(error, commands.CheckFailure):
+        embed = discord.Embed(
+            title="🛡️ **ACCESS RESTRICTED**",
+            description=
+            "```diff\n- Command requirements not met\n+ Check role/permission requirements\n```",
+            color=0xFF6347)
+
+        try:
+            await ctx.send(embed=embed)
+        except:
+            await ctx.send(
+                "🛡️ You don't meet the requirements for this command.")
+
+    # Handle command disabled
+    elif isinstance(error, commands.DisabledCommand):
+        embed = discord.Embed(
+            title="🚫 **COMMAND DISABLED**",
+            description=
+            "```diff\n- This command is temporarily disabled\n+ Try again later\n```",
+            color=0x808080)
+
+        try:
+            await ctx.send(embed=embed)
+        except:
+            await ctx.send("🚫 This command is currently disabled.")
+
+    # Handle unexpected errors
     else:
-        # Logs unexpected errors and calls your enhanced embed-based handler
-        logger.error(f"❌ Unhandled command error: {error}")
+        # Log the full error for debugging
+        logger.error(f"❌ Unhandled command error in {ctx.command}: {error}",
+                     exc_info=True)
+
+        # Call the global error handler for unhandled cases
         await handle_global_error(ctx, error)
 
 
@@ -1262,11 +1459,12 @@ async def on_member_update(before, after):
 
 # ==== Commands ====
 @bot.command()
+@safe_command_wrapper
 @cooldown_check('daily')
 async def daily(ctx):
     try:
         user_id = str(ctx.author.id)
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         user_data = get_user_data(user_id)
 
         last_claim = user_data.get("last_claim")
@@ -1289,7 +1487,18 @@ async def daily(ctx):
             role_bonus = "🔰 **STANDARD RATE**"
 
         if last_claim:
-            last_time = datetime.datetime.fromisoformat(last_claim)
+            # FIX: Ensure last_time is timezone-aware
+            try:
+                last_time = datetime.fromisoformat(last_claim)
+                # If the datetime doesn't have timezone info, assume UTC
+                if last_time.tzinfo is None:
+                    last_time = last_time.replace(tzinfo=timezone.utc)
+            except ValueError:
+                # Handle old datetime format without timezone
+                last_time = datetime.strptime(last_claim,
+                                              "%Y-%m-%d %H:%M:%S.%f")
+                last_time = last_time.replace(tzinfo=timezone.utc)
+
             delta = (now - last_time).days
             if delta == 0:
                 remaining = 24 - (now - last_time).seconds // 3600
@@ -1368,6 +1577,7 @@ async def daily(ctx):
 
 
 @bot.command()
+@safe_command_wrapper
 @commands.has_permissions(administrator=True)
 async def forceconvert(ctx):
     """Manually trigger monthly conversion (Admin only)"""
@@ -1450,10 +1660,11 @@ async def forceconvert(ctx):
 
 
 @bot.command()
+@safe_command_wrapper
 @cooldown_check('nextconvert')
 async def nextconvert(ctx):
     """Show when the next monthly conversion will happen"""
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     # Calculate next conversion date
     if now.day == 1 and now.hour == 0:
@@ -1582,7 +1793,7 @@ async def cloudbackup(ctx):
             embed.add_field(
                 name="📊 **Backup Statistics**",
                 value=
-                f"```yaml\nTables Backed Up: 5\nFile Size: {file_size:,} bytes\nTimestamp: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC\nLocation: {'GitHub + Local' if github_success else 'Local Only'}\n```",
+                f"```yaml\nTables Backed Up: 5\nFile Size: {file_size:,} bytes\nTimestamp: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC\nLocation: {'GitHub + Local' if github_success else 'Local Only'}\n```",
                 inline=False)
 
             embed.set_footer(
@@ -1607,6 +1818,7 @@ async def cloudbackup(ctx):
 
 
 @bot.command()
+@safe_command_wrapper
 @cooldown_check('usename')
 async def usename(ctx, member: discord.Member, *, new_nickname: str):
     """Use a name change card on someone"""
@@ -1630,7 +1842,8 @@ async def usename(ctx, member: discord.Member, *, new_nickname: str):
             description=
             "```diff\n- Target has nickname lock active\n+ Cannot change protected nicknames\n```",
             color=0xFF6347)
-        return await ctx.send(embed=embed)
+        result, error = await safe_send(ctx, embed=embed)
+        return
 
     # Check nickname length and validity
     if len(new_nickname) > 32:
@@ -1638,7 +1851,8 @@ async def usename(ctx, member: discord.Member, *, new_nickname: str):
             title="❌ **NICKNAME TOO LONG**",
             description="```diff\n- Maximum 32 characters allowed\n```",
             color=0xFF0000)
-        return await ctx.send(embed=embed)
+        result, error = await safe_send(ctx, embed=embed)
+        return
 
     try:
         # Store original nickname
@@ -1655,7 +1869,7 @@ async def usename(ctx, member: discord.Member, *, new_nickname: str):
         update_user_data(user_id, balance=new_balance)
 
         # Set expiry (24 hours from now)
-        expires_at = (datetime.utcnow() +
+        expires_at = (datetime.now(timezone.utc) +
                       datetime.timedelta(hours=24)).isoformat()
 
         # Record the name change
@@ -1718,81 +1932,129 @@ async def usename(ctx, member: discord.Member, *, new_nickname: str):
 
 
 @bot.command()
+@safe_command_wrapper
 @cooldown_check('sendsp')
 async def sendsp(ctx, member: discord.Member, amount: int):
     """Send Spirit Points to another user (Owner only)"""
-    # Check if user has the Owner role
-    user_role_ids = [role.id for role in ctx.author.roles]
-    if ROLE_ID_OWNER not in user_role_ids:
+    try:
+        # Check if user has the Owner role
+        user_role_ids = [role.id for role in ctx.author.roles]
+        if ROLE_ID_OWNER not in user_role_ids:
+            embed = discord.Embed(
+                title="👑 **OWNER ACCESS REQUIRED** 👑",
+                description=(
+                    "```diff\n"
+                    "- COSMIC AUTHORITY INSUFFICIENT\n"
+                    "- Only the realm Owner may grant Spirit Points\n"
+                    "```\n"
+                    "⚡ *This power belongs to the supreme ruler alone...*"),
+                color=0xFF0000)
+            return await ctx.send(embed=embed)
+
+        # Validate amount
+        if amount <= 0:
+            embed = discord.Embed(
+                title="❌ **INVALID AMOUNT** ❌",
+                description=("```diff\n"
+                             "- ERROR: Amount must be positive\n"
+                             "+ Enter a valid positive number\n"
+                             "```"),
+                color=0xFF4500)
+            return await ctx.send(embed=embed)
+
+        # Add maximum amount check to prevent abuse
+        if amount > 1000000:  # Adjust limit as needed
+            embed = discord.Embed(
+                title="⚠️ **AMOUNT TOO LARGE** ⚠️",
+                description=("```diff\n"
+                             "- ERROR: Amount exceeds maximum limit\n"
+                             "+ Maximum: 1,000,000 SP per transaction\n"
+                             "```"),
+                color=0xFF4500)
+            return await ctx.send(embed=embed)
+
+        # Check if member is bot
+        if member.bot:
+            embed = discord.Embed(
+                title="🤖 **INVALID TARGET** 🤖",
+                description="```diff\n- Cannot grant SP to bots\n```",
+                color=0xFF4500)
+            return await ctx.send(embed=embed)
+
+        # Get receiver data
+        receiver_id = str(member.id)
+        receiver_data = get_user_data(receiver_id)
+        old_sp = receiver_data.get("sp", 0)  # Use .get() for safety
+        new_sp = old_sp + amount
+
+        # Update receiver's SP
+        update_user_data(receiver_id, sp=new_sp)
+
+        # Log transaction
+        log_transaction(receiver_id, "owner_sp_grant", amount, old_sp, new_sp,
+                        f"SP grant by Owner {ctx.author.display_name}")
+
+        # Success embed
         embed = discord.Embed(
-            title="👑 **OWNER ACCESS REQUIRED** 👑",
-            description=
-            "```diff\n- COSMIC AUTHORITY INSUFFICIENT\n- Only the realm Owner may grant Spirit Points\n```\n⚡ *This power belongs to the supreme ruler alone...*",
+            title="👑 **DIVINE SP BLESSING GRANTED** 👑",
+            description=(
+                "```fix\n"
+                "⚡ SUPREME OWNER AUTHORITY ACTIVATED ⚡\n"
+                "```\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "*✨ The cosmic Owner channels raw spiritual energy ✨*"),
+            color=0x9932CC)
+
+        embed.add_field(
+            name="👑 **SUPREME OWNER**",
+            value=
+            f"```ansi\n\u001b[0;35m{ctx.author.display_name}\u001b[0m\n```",
+            inline=True)
+
+        embed.add_field(
+            name="🎯 **BLESSED RECIPIENT**",
+            value=f"```ansi\n\u001b[0;36m{member.display_name}\u001b[0m\n```",
+            inline=True)
+
+        embed.add_field(name="⚡ **SPIRIT POINTS GRANTED**",
+                        value=f"```yaml\n⚡ +{amount:,} Spirit Points\n```",
+                        inline=False)
+
+        embed.add_field(name="🔋 **NEW SP BALANCE**",
+                        value=f"```fix\n⚡ {new_sp:,} SP\n```",
+                        inline=False)
+
+        embed.add_field(
+            name="🌟 **DIVINE BLESSING**",
+            value=("```css\n"
+                   "[Raw spiritual energy flows from the cosmic throne]\n"
+                   "```\n"
+                   "💫 *The Owner's will shapes reality itself...*"),
+            inline=False)
+
+        embed.set_footer(
+            text="👑 Supreme Owner Privilege • Spirit Point Grant System",
+            icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
+
+        # Use modern datetime
+        embed.timestamp = datetime.now(timezone.utc)
+
+        # Send the embed
+        result, error = await safe_send(ctx, embed=embed)
+        if error:
+            logger.error(f"❌ Failed to send message: {error}")
+
+    except Exception as e:
+        logger.error(f"❌ Error in sendsp command: {e}")
+        error_embed = discord.Embed(
+            title="❌ **SYSTEM ERROR** ❌",
+            description="```diff\n- An unexpected error occurred\n```",
             color=0xFF0000)
-        return await ctx.send(embed=embed)
-
-    if amount <= 0:
-        embed = discord.Embed(
-            title="❌ **INVALID AMOUNT** ❌",
-            description=
-            "```diff\n- ERROR: Amount must be positive\n+ Enter a valid positive number\n```",
-            color=0xFF4500)
-        return await ctx.send(embed=embed)
-
-    # Get receiver data
-    receiver_id = str(member.id)
-    receiver_data = get_user_data(receiver_id)
-    old_sp = receiver_data["sp"]
-    new_sp = old_sp + amount
-
-    # Update receiver's SP
-    update_user_data(receiver_id, sp=new_sp)
-
-    # Log transaction
-    log_transaction(receiver_id, "owner_sp_grant", amount, old_sp, new_sp,
-                    f"SP grant by Owner {ctx.author.display_name}")
-
-    embed = discord.Embed(
-        title="👑 **DIVINE SP BLESSING GRANTED** 👑",
-        description=
-        "```fix\n⚡ SUPREME OWNER AUTHORITY ACTIVATED ⚡\n```\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n*✨ The cosmic Owner channels raw spiritual energy ✨*",
-        color=0x9932CC)
-
-    embed.add_field(
-        name="👑 **SUPREME OWNER**",
-        value=f"```ansi\n\u001b[0;35m{ctx.author.display_name}\u001b[0m\n```",
-        inline=True)
-
-    embed.add_field(
-        name="🎯 **BLESSED RECIPIENT**",
-        value=f"```ansi\n\u001b[0;36m{member.display_name}\u001b[0m\n```",
-        inline=True)
-
-    embed.add_field(name="⚡ **SPIRIT POINTS GRANTED**",
-                    value=f"```yaml\n⚡ +{amount:,} Spirit Points\n```",
-                    inline=False)
-
-    embed.add_field(name="🔋 **NEW SP BALANCE**",
-                    value=f"```fix\n⚡ {new_sp:,} SP\n```",
-                    inline=False)
-
-    embed.add_field(
-        name="🌟 **DIVINE BLESSING**",
-        value=
-        "```css\n[Raw spiritual energy flows from the cosmic throne]\n```\n💫 *The Owner's will shapes reality itself...*",
-        inline=False)
-
-    embed.set_footer(
-        text="👑 Supreme Owner Privilege • Spirit Point Grant System",
-        icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
-    embed.timestamp = datetime.datetime.utcnow()
-
-    result, error = await safe_send(ctx, embed=embed)
-    if error:
-        logger.error(f"❌ Failed to send message: {error}")
+        await ctx.send(embed=error_embed)
 
 
 @bot.command()
+@safe_command_wrapper
 @commands.has_permissions(administrator=True)
 async def restorebackup(ctx):
     """Restore database from cloud backup (GitHub or local)"""
@@ -1875,6 +2137,7 @@ async def restorebackup(ctx):
 
 # Admin command to check API status
 @bot.command()
+@safe_command_wrapper
 @commands.has_permissions(administrator=True)
 async def apistatus(ctx):
     """Check API usage and rate limiting status (Admin only)"""
@@ -1939,6 +2202,7 @@ async def apistatus(ctx):
 
 
 @bot.command()
+@safe_command_wrapper
 @commands.has_permissions(administrator=True)
 async def backupstatus(ctx):
     """Check backup status and list available backups (GitHub + Local)"""
@@ -2049,6 +2313,7 @@ async def backupstatus(ctx):
 
 
 @bot.command()
+@safe_command_wrapper
 @cooldown_check('ssbal')
 async def ssbal(ctx, member: discord.Member = None):
     user = member or ctx.author
@@ -2093,6 +2358,7 @@ async def ssbal(ctx, member: discord.Member = None):
 
 
 @bot.command()
+@safe_command_wrapper
 @cooldown_check('spbal')
 async def spbal(ctx, member: discord.Member = None):
     user = member or ctx.author
@@ -2143,6 +2409,7 @@ async def spbal(ctx, member: discord.Member = None):
 
 
 @bot.command()
+@safe_command_wrapper
 @cooldown_check('exchange')
 async def exchange(ctx, amount: str):
     user_id = str(ctx.author.id)
@@ -2209,9 +2476,10 @@ async def exchange(ctx, amount: str):
 
 
 @bot.command()
+@safe_command_wrapper
 @cooldown_check('coinflip')
 async def coinflip(ctx, guess: str, amount: str):
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     user_id = str(ctx.author.id)
     guess = guess.lower()
 
@@ -2235,7 +2503,8 @@ async def coinflip(ctx, guess: str, amount: str):
             color=0x4682B4)
         embed.set_footer(
             text="⚡ Gambling cooldown: 60 seconds between attempts")
-        return await ctx.send(embed=embed)
+        result, error = await safe_send(ctx, embed=embed)
+        return
 
     validated_amount = validate_amount(amount, 20000)
     if validated_amount is None:
@@ -2244,7 +2513,8 @@ async def coinflip(ctx, guess: str, amount: str):
             description=
             "```diff\n- BETTING ERROR\n+ Enter a valid number or 'all'\n```",
             color=0xFF0000)
-        return await ctx.send(embed=embed)
+        result, error = await safe_send(ctx, embed=embed)
+        return
 
     if validated_amount == "all":
         bet = min(sp, 20000)
@@ -2258,7 +2528,8 @@ async def coinflip(ctx, guess: str, amount: str):
             "```css\n[INSUFFICIENT FUNDS OR LIMIT EXCEEDED]\n```\n💰 *Maximum bet: 20,000 SP*\n⚡ *Current SP: {:,}*"
             .format(sp),
             color=0xFF4500)
-        return await ctx.send(embed=embed)
+        result, error = await safe_send(ctx, embed=embed)
+        return
 
     flip = random.choice(["heads", "tails"])
     won = (flip == guess)
@@ -2322,6 +2593,7 @@ async def coinflip(ctx, guess: str, amount: str):
 
 
 @bot.command()
+@safe_command_wrapper
 @cooldown_check('shop')
 async def shop(ctx):
     embed = discord.Embed(
@@ -2354,6 +2626,7 @@ async def shop(ctx):
 
 
 @bot.command()
+@safe_command_wrapper
 @cooldown_check('buy')
 async def buy(ctx, item: str):
     user_id = str(ctx.author.id)
@@ -2387,7 +2660,7 @@ async def buy(ctx, item: str):
         effect = "🔒 **IDENTITY SEALED** - *Your name is now protected from all changes*"
         effect_color = 0x4169E1
     elif item == "temp_admin":
-        expiry = datetime.datetime.utcnow() + datetime.timedelta(hours=1)
+        expiry = datetime.now(timezone.utc) + datetime.timedelta(hours=1)
         add_temp_admin(user_id, expiry.isoformat(), str(ctx.guild.id))
         role = ctx.guild.get_role(ROLE_ID_TEMP_ADMIN)
         if role:
@@ -2447,6 +2720,7 @@ async def buy(ctx, item: str):
 
 
 @bot.command()
+@safe_command_wrapper
 async def givess(ctx, member: discord.Member, amount: int):
     # Check if user has administrator permissions
     if not ctx.author.guild_permissions.administrator:
@@ -2503,7 +2777,7 @@ async def givess(ctx, member: discord.Member, amount: int):
     embed.set_footer(
         text="⚡ Divine Administrative System ⚡",
         icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
-    embed.timestamp = datetime.datetime.utcnow()
+    embed.timestamp = datetime.now(timezone.utc)
 
     result, error = await safe_send(ctx, embed=embed)
     if error:
@@ -2511,6 +2785,7 @@ async def givess(ctx, member: discord.Member, amount: int):
 
 
 @bot.command()
+@safe_command_wrapper
 async def takess(ctx, member: discord.Member, amount: int):
     # Check if user has administrator permissions
     if not ctx.author.guild_permissions.administrator:
@@ -2575,7 +2850,7 @@ async def takess(ctx, member: discord.Member, amount: int):
     embed.set_footer(
         text="⚡ Divine Administrative System ⚡",
         icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
-    embed.timestamp = datetime.datetime.utcnow()
+    embed.timestamp = datetime.now(timezone.utc)
 
     result, error = await safe_send(ctx, embed=embed)
     if error:
@@ -2583,6 +2858,7 @@ async def takess(ctx, member: discord.Member, amount: int):
 
 
 @bot.command()
+@safe_command_wrapper
 @cooldown_check('top')
 async def top(ctx):
     leaderboard = get_leaderboard('balance', 10)
@@ -2627,6 +2903,7 @@ async def top(ctx):
 
 
 @bot.command()
+@safe_command_wrapper
 @cooldown_check('lucky')
 async def lucky(ctx):
     """Shows total SP of top 10 players instead of individual gambling stats"""
@@ -2682,10 +2959,11 @@ async def lucky(ctx):
 
 
 @bot.command()
+@safe_command_wrapper
 @cooldown_check('unlucky')
 async def unlucky(ctx):
     """Shows top 10 users who lost the most SP this month"""
-    current_month = datetime.datetime.utcnow().strftime("%Y-%m")
+    current_month = datetime.now(timezone.utc).strftime("%Y-%m")
     top_losers = get_top_losers(current_month, 10)
 
     if not top_losers:
@@ -2703,7 +2981,7 @@ async def unlucky(ctx):
 
         embed.set_footer(
             text=
-            f"📅 {datetime.datetime.utcnow().strftime('%B %Y')} • Keep the luck flowing!",
+            f"📅 {datetime.now(timezone.utc).strftime('%B %Y')} • Keep the luck flowing!",
             icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
 
         return await ctx.send(embed=embed)
@@ -2759,7 +3037,7 @@ async def unlucky(ctx):
     embed.add_field(
         name="👹 **VOID ANALYSIS**",
         value=
-        f"```yaml\nAverage Loss: {average_loss:,} SP\nVoid Status: {status_color}\nMonth: {datetime.datetime.utcnow().strftime('%B %Y')}\n```\n{void_status}",
+        f"```yaml\nAverage Loss: {average_loss:,} SP\nVoid Status: {status_color}\nMonth: {datetime.now(timezone.utc).strftime('%B %Y')}\n```\n{void_status}",
         inline=False)
 
     embed.add_field(
@@ -2770,7 +3048,7 @@ async def unlucky(ctx):
 
     embed.set_footer(
         text=
-        f"💀 Monthly Misfortune Report • {datetime.datetime.utcnow().strftime('%B %Y')}",
+        f"💀 Monthly Misfortune Report • {datetime.now(timezone.utc).strftime('%B %Y')}",
         icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
 
     result, error = await safe_send(ctx, embed=embed)
@@ -2779,6 +3057,23 @@ async def unlucky(ctx):
 
 
 @bot.command()
+@commands.has_permissions(administrator=True)
+async def errortest(ctx, error_type: str = "generic"):
+    """Test error handling (Admin only)"""
+    if error_type == "generic":
+        raise Exception("Test error for debugging")
+    elif error_type == "permission":
+        raise commands.MissingPermissions(["administrator"])
+    elif error_type == "argument":
+        raise commands.MissingRequiredArgument(
+            commands.Parameter("test",
+                               commands.Parameter.POSITIONAL_OR_KEYWORD))
+    else:
+        await ctx.send("Available error types: generic, permission, argument")
+
+
+@bot.command()
+@safe_command_wrapper
 @cooldown_check('lose')
 async def lose(ctx, member: discord.Member = None):
     """Shows SP lost this month for the user or tagged member"""
@@ -2786,7 +3081,7 @@ async def lose(ctx, member: discord.Member = None):
     user_id = str(user.id)
 
     # Get current month stats
-    current_month = datetime.datetime.utcnow().strftime("%Y-%m")
+    current_month = datetime.now(timezone.utc).strftime("%Y-%m")
     monthly_stats = get_monthly_stats(user_id, current_month)
 
     losses = monthly_stats.get("losses", 0)
@@ -2856,7 +3151,7 @@ async def lose(ctx, member: discord.Member = None):
     embed.set_thumbnail(url=user.avatar.url if user.avatar else None)
     embed.set_footer(
         text=
-        f"📅 {datetime.datetime.utcnow().strftime('%B %Y')} • Gamble responsibly",
+        f"📅 {datetime.now(timezone.utc).strftime('%B %Y')} • Gamble responsibly",
         icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
 
     result, error = await safe_send(ctx, embed=embed)
@@ -2865,6 +3160,7 @@ async def lose(ctx, member: discord.Member = None):
 
 
 @bot.command()
+@safe_command_wrapper
 @cooldown_check('help')
 async def help(ctx):
     """Display all available commands"""
@@ -2947,10 +3243,18 @@ if __name__ == "__main__":
     flask_thread = Thread(target=run_flask)
     flask_thread.daemon = True
     flask_thread.start()
+    logger.info("🌐 Flask server started")
 
-    # Start the Discord bot
-    try:
-        bot.run(TOKEN)
-    except Exception as e:
-        print(f"❌ Bot failed to start: {e}")
-        print("📝 Please check your DISCORD_BOT_TOKEN in the .env file")
+    # Run the main bot with proper error handling
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            asyncio.run(main())
+            break
+        except Exception as e:
+            logger.error(f"❌ Bot startup attempt {attempt + 1} failed: {e}")
+            if attempt == max_retries - 1:
+                logger.error("❌ Max retries exceeded, shutting down")
+                raise
+            time.sleep(5)  # Wait before retry
+            logger.info(f"🔄 Retrying bot startup in 5 seconds...")
