@@ -466,8 +466,8 @@ async def check_database_integrity():
         logger.error(f"❌ Database corruption detected: {e}")
         return False
 
-async def init_database():
-    """Initialize database with corruption check"""
+async def init_database_async():
+    """Initialize database with corruption check (async version)"""
     try:
         # Check if database exists and is intact
         if os.path.exists(DB_FILE):
@@ -2492,7 +2492,7 @@ async def usename(ctx, member: discord.Member, *, new_nickname: str):
         user_id = str(ctx.author.id)  # Add this line to get user_id
         user_data = get_user_data(user_id)  # Add this line to get user_data
         new_balance = user_data["balance"] - 10000
-        await update_user_data(target_id, balance=new_balance)
+        await update_user_data(user_id, balance=new_balance)
 
 
         # Set expiry (24 hours from now)
@@ -3152,7 +3152,7 @@ async def coinflip(ctx, guess: str, amount: str):
 
     if won:
         new_sp = sp + bet
-        await update_user_data(user_id, balance=new_balance)
+        await update_user_data(user_id, sp=new_sp)
 
         update_monthly_stats(user_id, win_amount=bet)
         log_transaction(user_id, "gambling_win", bet, sp, new_sp,
@@ -3173,7 +3173,7 @@ async def coinflip(ctx, guess: str, amount: str):
                         inline=True)
     else:
         new_sp = sp - bet
-        await update_user_data(user_id, balance=new_balance)
+        await update_user_data(user_id, sp=new_sp)
 
         update_monthly_stats(user_id, loss_amount=bet)
         log_transaction(user_id, "gambling_loss", -bet, sp, new_sp,
