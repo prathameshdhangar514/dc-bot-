@@ -1,0 +1,65 @@
+async def main():
+    """Main async function with proper startup sequence and error recovery"""
+    logger.info("🚀 Starting Discord Bot...")
+
+    max_connection_retries = 5
+    retry_delay = 10  # seconds
+
+    for attempt in range(max_connection_retries):
+        try:
+            # Test connection first
+            logger.info(
+                f"🔍 Testing connection (attempt {attempt + 1}/{max_connection_retries})..."
+            )
+            if not await test_bot_connection():
+                logger.error("❌ Bot token validation failed")
+                if attempt < max_connection_retries - 1:
+                    logger.info(f"⏳ Retrying in {retry_delay} seconds...")
+                    await asyncio.sleep(retry_delay)
+                    continue
+                else:
+                    return
+
+            # Create startup backup
+            await startup_backup()
+
+            # Start the bot
+            logger.info("🤖 Starting Discord bot connection...")
+            await bot.start(TOKEN)
+            break  # If we get here, bot started successfully
+
+        except discord.LoginFailure:
+            logger.error("❌ Invalid bot token")
+            break
+
+        except discord.HTTPException as e:
+            logger.error(f"❌ Discord HTTP error: {e}")
+            if attempt < max_connection_retries - 1:
+                logger.info(f"⏳ Retrying in {retry_delay} seconds...")
+                await asyncio.sleep(retry_delay)
+                retry_delay *= 2  # Exponential backoff
+            else:
+                logger.error("❌ Max retries exceeded")
+
+        except KeyboardInterrupt:
+            logger.info("🛑 Keyboard interrupt received")
+            break
+
+        except Exception as e:
+            logger.error(f"❌ Unexpected bot error: {e}")
+            if attempt < max_connection_retries - 1:
+                logger.info(f"⏳ Retrying in {retry_delay} seconds...")
+                await asyncio.sleep(retry_delay)
+                retry_delay *= 2
+            else:
+                logger.error("❌ Max retries exceeded")
+
+    # Cleanup
+    try:
+        if not bot.is_closed():
+            logger.info("🛑 Closing bot connection...")
+            await bot.close()
+    except:
+        pass
+
+    logger.info("🛑 Bot shutdown complete")

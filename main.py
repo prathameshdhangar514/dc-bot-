@@ -948,6 +948,7 @@ class GitHubBackupManager:
             return True, backup_files
 
         except Exception as e:
+            logger.error(f"Error listing GitHub backups: {e}")
             return False, []
 
 
