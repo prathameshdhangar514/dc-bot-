@@ -663,7 +663,7 @@ SHOP_ITEMS = {
 
 
 # ==== Database Setup ====
-def init_database():
+async def init_database():
     """Initialize SQLite database with all required tables"""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
@@ -1426,7 +1426,7 @@ def get_top_losers(month=None, limit=10):
 
 
 # Initialize database on startup
-def ensure_database_exists():
+async def ensure_database_exists():
     """Ensure database exists, restore from backup if needed"""
     # If DB file missing, try restore
     if not os.path.exists(DB_FILE):
@@ -1435,7 +1435,7 @@ def ensure_database_exists():
             logger.info("✅ Database restored from backup")
         else:
             logger.info("📝 Creating new database...")
-            init_database()
+            await init_database()
     else:
         # Before touching DB, attempt to restore latest backup
         if github_backup:
@@ -1446,7 +1446,7 @@ def ensure_database_exists():
             logger.info("📂 Using existing local database")
 
         # Ensure all required tables exist (non-destructive)
-        init_database()
+        await init_database()
 
     # Clear caches after restore so fresh data loads
     if 'user_cache' in globals():
