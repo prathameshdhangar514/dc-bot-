@@ -1636,10 +1636,10 @@ async def remove_expired_items():
     """Remove expired temp admin roles and name changes"""
     # Handle temp admins
     temp_admins = get_temp_admins()
-    now = datetime.now(timezone.utc)
+    now = datetime.datetime.now(timezone.utc)
 
     for admin_data in temp_admins:
-        expire_time = datetime.fromisoformat(admin_data["expires_at"])
+        expire_time = datetime.datetime.fromisoformat(admin_data["expires_at"])
         if now >= expire_time:
             try:
                 guild = bot.get_guild(int(admin_data["guild_id"]))
@@ -1656,7 +1656,7 @@ async def remove_expired_items():
     active_name_changes = get_active_name_changes()
 
     for change in active_name_changes:
-        expire_time = datetime.fromisoformat(change["expires_at"])
+        expire_time = datetime.datetime.fromisoformat(change["expires_at"])
         if now >= expire_time:
             try:
                 guild = bot.get_guild(int(change["guild_id"]))
@@ -1759,12 +1759,14 @@ async def on_command_error(ctx, error):
 
     try:
         await ctx.send(embed=embed, delete_after=15)
-    except:
+    except Exception as e:
+        logger.exception(f"An unexpected error occurred: {e}")
         # Fallback to simple text if embed fails
         try:
             await ctx.send("❌ An error occurred. Please try again.",
                            delete_after=10)
-        except:
+        except Exception as e:
+            logger.exception(f"An unexpected error occurred: {e}")
             pass  # Ultimate fallback - just log it
 
 
@@ -1787,7 +1789,7 @@ async def on_member_update(before, after):
 async def daily(ctx):
     try:
         user_id = str(ctx.author.id)
-        now = datetime.now(timezone.utc)
+        now = datetime.datetime.now(timezone.utc)
         user_data = get_user_data(user_id)
 
         last_claim = user_data.get("last_claim")
@@ -1812,13 +1814,13 @@ async def daily(ctx):
         if last_claim:
             # FIX: Ensure last_time is timezone-aware
             try:
-                last_time = datetime.fromisoformat(last_claim)
+                last_time = datetime.datetime.fromisoformat(last_claim)
                 # If the datetime doesn't have timezone info, assume UTC
                 if last_time.tzinfo is None:
                     last_time = last_time.replace(tzinfo=timezone.utc)
             except ValueError:
                 # Handle old datetime format without timezone
-                last_time = datetime.strptime(last_claim,
+                last_time = datetime.datetime.strptime(last_claim,
                                               "%Y-%m-%d %H:%M:%S.%f")
                 last_time = last_time.replace(tzinfo=timezone.utc)
 

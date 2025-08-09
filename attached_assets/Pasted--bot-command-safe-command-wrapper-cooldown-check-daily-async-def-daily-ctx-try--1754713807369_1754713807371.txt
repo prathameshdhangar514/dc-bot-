@@ -1,0 +1,116 @@
+@bot.command()
+@safe_command_wrapper
+@cooldown_check('daily')
+async def daily(ctx):
+    try:
+        user_id = str(ctx.author.id)
+        now = datetime.datetime.now(timezone.utc)
+        user_data = get_user_data(user_id)
+
+        last_claim = user_data.get("last_claim")
+        streak = user_data.get("streak", 0)
+        base_reward = 300
+
+        # Check user roles by ID and set reward accordingly
+        user_role_ids = [role.id for role in ctx.author.roles]
+
+        if ROLE_ID_ADMIN in user_role_ids:
+            base_reward = 400
+            role_bonus = "👑 **ADMIN BLESSING** (+100 SP)"
+        elif ROLE_ID_HMW in user_role_ids:
+            base_reward = 350
+            role_bonus = "⚡ **HMW PRIVILEGE** (+50 SP)"
+        elif ROLE_ID_BOOSTER in user_role_ids:
+            base_reward = 350
+            role_bonus = "💎 **BOOSTER BONUS** (+50 SP)"
+        else:
+            role_bonus = "🔰 **STANDARD RATE**"
+
+        if last_claim:
+            # FIX: Ensure last_time is timezone-aware
+            try:
+                last_time = datetime.datetime.fromisoformat(last_claim)
+                # If the datetime doesn't have timezone info, assume UTC
+                if last_time.tzinfo is None:
+                    last_time = last_time.replace(tzinfo=timezone.utc)
+            except ValueError:
+                # Handle old datetime format without timezone
+                last_time = datetime.datetime.strptime(last_claim,
+                                              "%Y-%m-%d %H:%M:%S.%f")
+                last_time = last_time.replace(tzinfo=timezone.utc)
+
+            delta = (now - last_time).days
+            if delta == 0:
+                remaining = 24 - (now - last_time).seconds // 3600
+                embed = discord.Embed(
+                    title="⏰ **TEMPORAL LOCK ACTIVE**",
+                    description=
+                    f"```diff\n- ENERGY RESERVES DEPLETED\n+ Regeneration in {remaining}h\n```\n🌟 *The cosmic energy needs time to flow through your soul...*",
+                    color=0x2B2D42)
+                embed.set_footer(text="⚡ Daily energy recharging...",
+                                 icon_url=ctx.author.avatar.url
+                                 if ctx.author.avatar else None)
+                return await ctx.send(embed=embed)
+            elif delta == 1:
+                streak += 1
+            else:
+                streak = 1
+        else:
+            streak = 1
+
+        reward = base_reward * 2 if streak == 5 else base_reward
+        if streak == 5:
+            streak = 0
+
+        # Update user data
+        old_sp = user_data.get('sp', 0)
+        new_sp = old_sp + reward
+
+        update_user_data(user_id,
+                         sp=new_sp,
+                         last_claim=now.isoformat(),
+                         streak=streak)
+
+        # Log transaction
+        log_transaction(user_id, "daily_claim", reward, old_sp, new_sp,
+                        f"Daily claim with {role_bonus}")
+
+        # Dynamic progress bar with better styling - Red to Green progression
+        streak_emojis = ['🟥', '🟥', '🟧', '🟨',
+                         '🟩']  # Red -> Orange -> Yellow -> Green
+        filled_emojis = ['🟩', '🟩', '🟩', '🟩', '🟩']  # All green when filled
+        bar = ''.join(
+            [filled_emojis[i] if i < streak else '🟥' for i in range(5)])
+
+        embed = discord.Embed(
+            title="⚡ **DAILY ENERGY HARVESTED** ⚡",
+            description=
+            f"```css\n[SPIRITUAL ENERGY CHANNELING COMPLETE]\n```\n💫 *The universe grants you its power...*",
+            color=0x8A2BE2 if streak >= 3 else 0x4169E1)
+
+        embed.add_field(
+            name="🎁 **REWARDS CLAIMED**",
+            value=f"```diff\n+ {reward:,} Spirit Points\n```\n{role_bonus}",
+            inline=False)
+
+        embed.add_field(
+            name="🔥 **STREAK PROGRESSION**",
+            value=
+            f"{bar} `{streak}/5`\n{'🌟 *STREAK BONUS ACTIVE!*' if streak >= 3 else '💪 *Keep the momentum going!*'}",
+            inline=False)
+
+        embed.set_thumbnail(
+            url=ctx.author.avatar.url if ctx.author.avatar else None)
+        embed.set_footer(
+            text=
+            f"⚡ Next claim available in 24 hours • {ctx.author.display_name}",
+            icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
+
+        result, error = await safe_send(ctx, embed=embed)
+        if error:
+            logger.error(f"❌ Failed to send message: {error}")
+
+    except Exception as e:
+        logger.error(f"❌ Daily command error: {e}")
+        await ctx.send("❌ An error occurred while processing your daily claim."
+                       )
