@@ -1883,10 +1883,10 @@ async def daily(ctx):
         old_sp = user_data.get('sp', 0)
         new_sp = old_sp + reward
 
-        update_user_data(user_id,
-                         sp=new_sp,
-                         last_claim=now.isoformat(),
-                         streak=streak)
+        await safe_update_user_data(user_id,
+                                   sp=new_sp,
+                                   last_claim=now.isoformat(),
+                                   streak=streak)
 
         # Log transaction
         log_transaction(user_id, "daily_claim", reward, old_sp, new_sp,
