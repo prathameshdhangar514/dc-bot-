@@ -74,15 +74,15 @@ class DatabasePool:
 # Define constants first
 DB_FILE = "bot_database.db"
 
-# Initialize pooldb_pool = DatabasePool(DB_FILE)
+# Initialize database pool
+db_pool = DatabasePool(DB_FILE)
+
+
 # Set up logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
-db_pool = DatabasePool(DB_FILE)
-
 
 # Initialize placeholder variables (will be properly set later)
 bot = None
@@ -622,8 +622,7 @@ def init_database():
         'CREATE INDEX IF NOT EXISTS idx_users_balance ON users(balance DESC)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_users_sp ON users(sp DESC)')
     cursor.execute(
-        'CREATE INDEX IF NOT EXISTS idx_monthly_stats_month ON monthly_stats(month)'
-    )
+        'CREATE INDEX IF NOT EXISTS idx_monthly_stats_month ON monthly_stats(month)')
     cursor.execute(
         'CREATE INDEX IF NOT EXISTS idx_monthly_stats_losses ON monthly_stats(losses DESC)'
     )
@@ -766,7 +765,7 @@ def get_monthly_stats(user_id, month=None):
 
     cursor.execute(
         '''
-        SELECT wins, losses FROM monthly_stats 
+        SELECT wins, losses FROM monthly_stats
         WHERE user_id = ? AND month = ?
     ''', (user_id, month))
 
@@ -826,7 +825,7 @@ def update_monthly_stats(user_id, win_amount=0, loss_amount=0, month=None):
     cursor.execute(
         '''
         INSERT OR REPLACE INTO monthly_stats (user_id, month, wins, losses)
-        VALUES (?, ?, 
+        VALUES (?, ?,
             COALESCE((SELECT wins FROM monthly_stats WHERE user_id = ? AND month = ?), 0) + ?,
             COALESCE((SELECT losses FROM monthly_stats WHERE user_id = ? AND month = ?), 0) + ?)
     ''', (user_id, month, user_id, month, win_amount, user_id, month,
@@ -1104,7 +1103,7 @@ def get_active_name_changes():
     cursor = conn.cursor()
 
     cursor.execute('''
-        SELECT id, owner_id, target_id, original_nickname, expires_at, guild_id 
+        SELECT id, owner_id, target_id, original_nickname, expires_at, guild_id
         FROM name_change_cards
     ''')
     results = cursor.fetchall()
@@ -1206,7 +1205,7 @@ def get_top_losers(month=None, limit=10):
 
     cursor.execute(
         '''
-        SELECT user_id, losses FROM monthly_stats 
+        SELECT user_id, losses FROM monthly_stats
         WHERE month = ? ORDER BY losses DESC LIMIT ?
     ''', (month, limit))
 
@@ -1364,10 +1363,9 @@ async def perform_monthly_conversion():
                 ''', (new_balance, new_sp, user_id))
 
                 # Log transaction
-                log_transaction(
-                    user_id, "monthly_conversion", sp_amount, old_balance,
-                    new_balance,
-                    f"Monthly auto-conversion: {sp_amount} SP → SS")
+                log_transaction(user_id, "monthly_conversion", sp_amount, old_balance,
+                                new_balance,
+                                f"Monthly auto-conversion: {sp_amount} SP → SS")
 
                 total_converted += sp_amount
                 conversion_count += 1
@@ -2075,7 +2073,7 @@ async def nextconvert(ctx):
 
 @bot.command()
 @safe_command_wrapper
-@commands.has_permissions(administrator=True)
+@cooldown_check('cloudbackup')
 async def cloudbackup(ctx):
     """Create a manual backup with GitHub cloud storage"""
     embed = discord.Embed(
@@ -2560,7 +2558,7 @@ async def apistatus(ctx):
 
 @bot.command()
 @safe_command_wrapper
-@commands.has_permissions(administrator=True)
+@cooldown_check('backupstatus')
 async def backupstatus(ctx):
     """Check backup status and list available backups (GitHub + Local)"""
     embed = discord.Embed(
@@ -3555,7 +3553,7 @@ async def help(ctx):
     !shop - View available items
     !buy <item> - Purchase shop items
       • nickname_lock (5,000 SS)
-      • temp_admin (25,000 SS) 
+      • temp_admin (25,000 SS)
       • hmw_role (50,000 SS)
       • name_change_card (10,000 SS)
     !usename @user "new nickname" - Use name change card
