@@ -1907,12 +1907,8 @@ async def daily(ctx):
         log_transaction(user_id, "daily_claim", reward, old_sp, new_sp,
                         f"Daily claim with {role_bonus}")
 
-        # Dynamic progress bar with better styling - Red to Green progression
-        streak_emojis = ['🟥', '🟥', '🟧', '🟨',
-                         '🟩']  # Red -> Orange -> Yellow -> Green
-        bar = ''.join([
-            streak_emojis[min(i, 4)] if i < streak else '🟥' for i in range(5)
-        ])
+        # Progress bar: green for completed streak days, red for remaining
+        bar = ''.join(['🟩' if i < streak else '🟥' for i in range(5)])
 
         embed = discord.Embed(
             title="⚡ **DAILY ENERGY HARVESTED** ⚡",
