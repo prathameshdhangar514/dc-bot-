@@ -26,7 +26,6 @@ import logging
 from collections import defaultdict
 from collections import deque
 import functools
-#from functools import lru_cache  # This should already be there, but verify it exists
 
 DB_LOCK = threading.Lock()
 DB_POOL = ThreadPoolExecutor(max_workers=3)
@@ -86,7 +85,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Initialize placeholder variables (will be properly set later)
-bot = None
+bot: Optional[commands.Bot] = None
 github_backup = None
 
 
@@ -1416,7 +1415,7 @@ async def monthly_conversion_check():
                             logger.info("✅ Post-conversion backup created")
 
                 # Notify in all guilds (optional)
-                if bot and bot.guilds:
+                if bot is not None and bot.guilds:
                     for guild in bot.guilds:
                         # Find a general channel to announce - ensure it's a TextChannel
                         channel = discord.utils.get(guild.text_channels,
@@ -1559,7 +1558,8 @@ async def main():
 
             # Start the bot
             logger.info("🤖 Starting Discord bot connection...")
-            await bot.start(TOKEN)
+            if bot is not None:
+                await bot.start(TOKEN)
             break  # If we get here, bot started successfully
 
         except discord.LoginFailure:
@@ -1623,8 +1623,8 @@ def enhanced_health():
             status["user_count"] = user_count
 
         # Test bot status
-        status["bot_connected"] = bot.is_ready()
-        status["guilds_count"] = len(bot.guilds) if bot.guilds else 0
+        status["bot_connected"] = bot.is_ready() if bot is not None else False
+        status["guilds_count"] = len(bot.guilds) if bot is not None and bot.guilds else 0
 
         # API status
         status["circuit_breaker"] = api_circuit_breaker.state.value
