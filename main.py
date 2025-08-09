@@ -1515,36 +1515,41 @@ async def api_health_monitor():
 
 
     async def main():
-        """Main async function with proper startup sequence and error recovery"""
-        logger.info("🚀 Starting Discord Bot...")
-        # Check if TOKEN is valid before proceeding
-        if not TOKEN:
-            logger.critical("❌ DISCORD_BOT_TOKEN not set in environment variables")
-            logger.critical(
-                "Please set your Discord bot token in the environment variables")
-            return
-        max_connection_retries = 5
-        retry_delay = 10  # seconds
-        for attempt in range(max_connection_retries):
-            try:
-                # Test connection first
-                logger.info(
-                    f"🔍 Testing connection (attempt {attempt + 1}/{max_connection_retries})..."
-                )
-                if not await test_bot_connection():
-                    logger.error("❌ Bot token validation failed")
-                    if attempt < max_connection_retries - 1:
-                        logger.info(f"⏳ Retrying in {retry_delay} seconds...")
-                        await asyncio.sleep(retry_delay)
-                        continue
-                    else:
-                        return
-                # Create startup backup
-                await startup_backup()
-                # Start the bot
-                logger.info("🤖 Starting Discord bot connection...")
-                await bot.start(TOKEN)
-                break  # If we get here, bot started successfully
+    """Main async function with proper startup sequence and error recovery"""
+    logger.info("🚀 Starting Discord Bot...")
+
+    # Check if TOKEN is valid before proceeding
+    if not TOKEN:
+        logger.critical("❌ DISCORD_BOT_TOKEN not set in environment variables")
+        logger.critical(
+            "Please set your Discord bot token in the environment variables")
+        return
+
+    max_connection_retries = 5
+    retry_delay = 10  # seconds
+
+    for attempt in range(max_connection_retries):
+        try:
+            # Test connection first
+            logger.info(
+                f"🔍 Testing connection (attempt {attempt + 1}/{max_connection_retries})..."
+            )
+            if not await test_bot_connection():
+                logger.error("❌ Bot token validation failed")
+                if attempt < max_connection_retries - 1:
+                    logger.info(f"⏳ Retrying in {retry_delay} seconds...")
+                    await asyncio.sleep(retry_delay)
+                    continue
+                else:
+                    return
+
+            # Create startup backup
+            await startup_backup()
+
+            # Start the bot
+            logger.info("🤖 Starting Discord bot connection...")
+            await bot.start(TOKEN)
+            break  # If we get here, bot started successfully
 
         except discord.LoginFailure:
             logger.error("❌ Invalid bot token")
