@@ -481,16 +481,16 @@ async def handle_global_error(ctx, error):
         # Use a simple send without the safe_send wrapper to prevent recursion
         try:
             await ctx.send(embed=embed)
-        except Exception as send_error:
+        except Exception as embed_send_error:
             # Fallback: try sending a simple text message
             try:
                 await ctx.send(
                     "❌ A system error occurred. Please contact an administrator."
                 )
-            except discord.DiscordException as send_error:
+            except discord.DiscordException as text_send_error:
                 # Ultimate fallback: just log it
                 logger.error(
-                    f"❌ Could not send error message to user {ctx.author.id}: {send_error}")
+                    f"❌ Could not send error message to user {ctx.author.id}: {text_send_error}")
                 pass
 
     except Exception as handler_error:
