@@ -71,18 +71,18 @@ class DatabasePool:
         finally:
             self._pool.put(conn)
 
+# Define constants first
+DB_FILE = "bot_database.db"
 
-# Initialize pool
-db_pool = DatabasePool(DB_FILE)
-
+# Initialize pooldb_pool = DatabasePool(DB_FILE)
 # Set up logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Define constants first
-DB_FILE = "bot_database.db"
+db_pool = DatabasePool(DB_FILE)
+
 
 # Initialize placeholder variables (will be properly set later)
 bot = None
