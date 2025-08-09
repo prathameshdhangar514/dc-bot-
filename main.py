@@ -1401,11 +1401,13 @@ async def monthly_conversion_check():
 
                 # Notify in all guilds (optional)
                 for guild in bot.guilds:
-                    # Find a general channel to announce
+                    # Find a general channel to announce - ensure it's a TextChannel
                     channel = discord.utils.get(
-                        guild.channels,
-                        name='general') or guild.text_channels[0]
-                    if channel:
+                        guild.text_channels, name='general')
+                    if not channel and guild.text_channels:
+                        channel = guild.text_channels[0]
+                    
+                    if channel and isinstance(channel, discord.TextChannel):
                         try:
                             embed = discord.Embed(
                                 title="🌟 **MONTHLY ASCENSION COMPLETE** 🌟",
@@ -1445,6 +1447,8 @@ async def monthly_conversion_check():
                         except Exception as e:
                             logger.error(
                                 f"❌ Failed to announce in {guild.name}: {e}")
+                    else:
+                        logger.warning(f"❌ No suitable text channel found in {guild.name}")
 
     except Exception as e:
         logger.error(f"❌ Monthly conversion check error: {e}")
