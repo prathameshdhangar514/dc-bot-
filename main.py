@@ -1,6 +1,7 @@
 import os, sqlite3, random, asyncio
 import datetime
 import time
+from enum import Enum
 from flask import Flask
 import discord
 from discord.ext import commands, tasks
@@ -8,16 +9,72 @@ from threading import Thread
 from dotenv import load_dotenv
 import base64
 import json
+import contextlib
+import threading
+from queue import Queue
+from concurrent.futures import ThreadPoolExecutor
 import signal
+import psutil
 import sys
 import aiohttp
 import requests
 import shutil
-from datetime import datetime, timezone, timedelta
+from datetime import timezone, timedelta
 import logging
-import asyncio
 from collections import defaultdict
-import functools  # This should already be there, but verify it exists
+from collections import deque
+import functools
+from functools import lru_cache  # This should already be there, but verify it exists
+
+DB_LOCK = threading.Lock()
+DB_POOL = ThreadPoolExecutor(max_workers=3)
+
+
+@contextlib.contextmanager
+def get_db_connection():
+    with db_pool.get_connection() as conn:
+        yield conn
+
+
+class DatabasePool:
+
+    def __init__(self, db_file, max_connections=5):
+        self.db_file = db_file
+        self.max_connections = max_connections
+        self._pool = Queue(maxsize=max_connections)
+        self._lock = threading.Lock()
+        self._initialized = False
+
+    def _initialize_pool(self):
+        if not self._initialized:
+            with self._lock:
+                if not self._initialized:
+                    for _ in range(self.max_connections):
+                        conn = sqlite3.connect(self.db_file,
+                                               timeout=30,
+                                               check_same_thread=False)
+                        conn.execute("PRAGMA journal_mode=WAL")
+                        conn.execute("PRAGMA foreign_keys=ON")
+                        self._pool.put(conn)
+                    self._initialized = True
+
+    @contextlib.contextmanager
+    def get_connection(self):
+        self._initialize_pool()
+        conn = self._pool.get(timeout=10)
+        try:
+            yield conn
+        except sqlite3.Error as e:
+            logger.error(f"❌ Database error: {e}")
+            conn.rollback()
+            raise
+        finally:
+            self._pool.put(conn)
+
+
+# Initialize pool
+DB_FILE = "bot_database.db"  # Define DB_FILE here
+db_pool = DatabasePool(DB_FILE)
 
 # Set up logging
 logging.basicConfig(
@@ -28,15 +85,121 @@ logger = logging.getLogger(__name__)
 
 def signal_handler(signum, frame):
     """Handle shutdown signals gracefully"""
-    logger.info("🛑 Shutdown signal received, closing bot...")
-    try:
-        if bot:
-            asyncio.create_task(bot.close())
-    except:
+    signal_name = "SIGTERM" if signum == 15 else "SIGINT" if signum == 2 else f"Signal {signum}"
+    logger.info(f"🛑 Shutdown signal received: {signal_name}")
+
+    # For hosting platforms, we want to shut down gracefully
+    if bot and not bot.is_closed():
+        logger.info("🔄 Initiating graceful bot shutdown...")
+        try:
+            # Try to create a final backup
+            backup_file = create_backup_with_cloud_storage()
+            if backup_file and github_backup:
+                success, result = github_backup.upload_backup_to_github(
+                    backup_file)
+                if success:
+                    logger.info("✅ Emergency backup created before shutdown")
+        except Exception as e:
+            logger.error(f"❌ Emergency backup failed: {e}")
+
+        # Close the bot
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                loop.create_task(bot.close())
+        except Exception as e:
         pass
+
+    logger.info("🛑 Bot shutdown complete")
     sys.exit(0)
 
 
+class CircuitState(Enum):
+    CLOSED = "closed"
+    OPEN = "open"
+    HALF_OPEN = "half_open"
+
+
+class AsyncCircuitBreaker:
+
+    def __init__(self, failure_threshold=5, timeout=60):
+        self.failure_threshold = failure_threshold
+        self.timeout = timeout
+        self.failure_count = 0
+        self.last_failure_time = 0
+        self.state = CircuitState.CLOSED
+        self._lock = asyncio.Lock()
+
+    async def call(self, func, *args, **kwargs):
+        async with self._lock:
+            now = time.time()
+
+            if self.state == CircuitState.OPEN:
+                if now - self.last_failure_time > self.timeout:
+                    self.state = CircuitState.HALF_OPEN
+                    logger.info("🔄 Circuit breaker transitioning to HALF_OPEN")
+                else:
+                    raise Exception(
+                        "Circuit breaker is OPEN - rejecting request")
+
+        try:
+            # Call the async function properly
+            if asyncio.iscoroutinefunction(func):
+                result = await func(*args, **kwargs)
+            else:
+                result = func(*args, **kwargs)
+
+            await self._on_success()
+            return result
+        except Exception as e:
+            await self._on_failure()
+            raise
+
+    async def _on_success(self):
+        async with self._lock:
+            self.failure_count = 0
+            if self.state == CircuitState.HALF_OPEN:
+                self.state = CircuitState.CLOSED
+                logger.info("✅ Circuit breaker CLOSED - service recovered")
+
+    async def _on_failure(self):
+        async with self._lock:
+            self.failure_count += 1
+            self.last_failure_time = time.time()
+            if self.failure_count >= self.failure_threshold:
+                self.state = CircuitState.OPEN
+                logger.error("🔴 Circuit breaker OPEN - service failing")
+
+
+# Update the global circuit breaker
+api_circuit_breaker = AsyncCircuitBreaker(failure_threshold=3, timeout=120)
+
+
+class TimedCache:
+
+    def __init__(self, ttl_seconds=300):  # 5 minute TTL
+        self.cache = {}
+        self.ttl = ttl_seconds
+
+    def get(self, key):
+        if key in self.cache:
+            value, timestamp = self.cache[key]
+            if time.time() - timestamp < self.ttl:
+                return value
+            else:
+                del self.cache[key]
+        return None
+
+    def set(self, key, value):
+        self.cache[key] = (value, time.time())
+
+    def clear(self):
+        self.cache.clear()
+
+
+# Create cache instances
+user_cache = TimedCache(ttl_seconds=60)  # Cache user data for 1 minute
+leaderboard_cache = TimedCache(ttl_seconds=300)
 # Register signal handlers
 signal.signal(signal.SIGTERM, signal_handler)
 signal.signal(signal.SIGINT, signal_handler)
@@ -64,26 +227,40 @@ user_command_cooldowns = defaultdict(lambda: defaultdict(float))
 global_command_usage = defaultdict(list)
 
 # Discord API rate limiting
-discord_api_calls = []
-DISCORD_API_LIMIT = 50  # requests per minute
 API_WINDOW = 60  # seconds
+DISCORD_API_LIMIT = 45  # requests per window
+discord_api_calls = []
 
 
-def check_discord_api_limit():
-    """Check if we're within Discord API limits"""
-    now = time.time()
-    # Remove old entries
-    global discord_api_calls
-    discord_api_calls = [
-        call_time for call_time in discord_api_calls
-        if now - call_time < API_WINDOW
-    ]
+class AdvancedRateLimit:
 
-    if len(discord_api_calls) >= DISCORD_API_LIMIT:
-        return False, (API_WINDOW - (now - discord_api_calls[0]))
+    def __init__(self, max_requests=45, window=60):  # More conservative
+        self.max_requests = max_requests
+        self.window = window
+        self.requests = deque()
+        self.lock = asyncio.Lock()
 
-    discord_api_calls.append(now)
-    return True, 0
+    async def acquire(self):
+        async with self.lock:
+            now = time.time()
+
+            # Remove old requests
+            while self.requests and self.requests[0] <= now - self.window:
+                self.requests.popleft()
+
+            # Check if we can make a request
+            if len(self.requests) >= self.max_requests:
+                sleep_time = self.window - (now - self.requests[0]) + 1
+                logger.warning(
+                    f"⚠️ Rate limit hit, sleeping {sleep_time:.1f}s")
+                await asyncio.sleep(sleep_time)
+                return await self.acquire()  # Recursive retry
+
+            self.requests.append(now)
+            return True
+
+
+discord_rate_limiter = AdvancedRateLimit(max_requests=45, window=60)
 
 
 def check_command_cooldown(user_id, command_name):
@@ -103,54 +280,60 @@ def check_command_cooldown(user_id, command_name):
     return True, 0
 
 
-async def safe_api_call(func, *args, **kwargs):
-    """Safely make API calls with retry logic"""
+# REPLACE enhanced_safe_api_call function:
+async def enhanced_safe_api_call(func, *args, **kwargs):
+    """Enhanced API call with circuit breaker and exponential backoff"""
     max_retries = 3
-    base_delay = 1
+    base_delay = 1  # Reduced from 2
 
     for attempt in range(max_retries):
         try:
-            # Check Discord API limits
-            can_call, wait_time = check_discord_api_limit()
-            if not can_call:
-                logger.warning(
-                    f"⚠️ Discord API limit reached, waiting {wait_time:.1f}s")
-                await asyncio.sleep(wait_time + 1)
+            # Acquire rate limit token first
+            await discord_rate_limiter.acquire()
 
-            result = await func(*args, **kwargs)
+            # Use the async circuit breaker properly
+            result = await api_circuit_breaker.call(func, *args, **kwargs)
             return result, None
 
         except discord.HTTPException as e:
-            if e.status == 429:  # Rate limited
+            if e.status == 429:
+                # Get retry_after from Discord's response
                 retry_after = getattr(e, 'retry_after',
                                       base_delay * (2**attempt))
-                logger.warning(
-                    f"⚠️ Rate limited, waiting {retry_after}s (attempt {attempt + 1})"
-                )
+                retry_after = min(retry_after, 60)  # Max 1 minute
+                logger.warning(f"⚠️ Rate limited, waiting {retry_after:.1f}s")
                 await asyncio.sleep(retry_after)
                 continue
-            elif e.status >= 500:  # Server error
-                delay = base_delay * (2**attempt)
-                logger.warning(
-                    f"⚠️ Server error {e.status}, retrying in {delay}s")
+            elif e.status >= 500:
+                delay = min(base_delay * (2**attempt), 30)
+                logger.error(
+                    f"❌ Discord server error {e.status}, waiting {delay}s")
                 await asyncio.sleep(delay)
                 continue
             else:
-                return None, f"Discord API Error: {e.status} - {e.text}"
+                return None, f"Discord API Error: {e.status}"
 
         except asyncio.TimeoutError:
-            delay = base_delay * (2**attempt)
-            logger.warning(f"⚠️ Timeout error, retrying in {delay}s")
+            delay = min(base_delay * (2**attempt), 15)
+            logger.warning(f"⚠️ Timeout, retrying in {delay}s")
             await asyncio.sleep(delay)
             continue
 
         except Exception as e:
-            logger.error(f"❌ Unexpected error in API call: {e}")
+            logger.error(f"❌ API call error: {e}")
             if attempt == max_retries - 1:
                 return None, str(e)
             await asyncio.sleep(base_delay * (2**attempt))
 
     return None, "Max retries exceeded"
+
+
+async def safe_api_call(func, *args, **kwargs):
+    """Simple wrapper for the enhanced API call function"""
+    # Track API calls for monitoring
+    discord_api_calls.append(time.time())
+    result, error = await enhanced_safe_api_call(func, *args, **kwargs)
+    return result, error
 
 
 # Command cooldown decorator
@@ -424,70 +607,142 @@ def init_database():
         )
     ''')
 
+    cursor.execute(
+        'CREATE INDEX IF NOT EXISTS idx_users_balance ON users(balance DESC)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_users_sp ON users(sp DESC)')
+    cursor.execute(
+        'CREATE INDEX IF NOT EXISTS idx_monthly_stats_month ON monthly_stats(month)'
+    )
+    cursor.execute(
+        'CREATE INDEX IF NOT EXISTS idx_monthly_stats_losses ON monthly_stats(losses DESC)'
+    )
+    cursor.execute(
+        'CREATE INDEX IF NOT EXISTS idx_temp_admins_expires ON temp_admins(expires_at)'
+    )
+    cursor.execute(
+        'CREATE INDEX IF NOT EXISTS idx_name_change_cards_expires ON name_change_cards(expires_at)'
+    )
+    cursor.execute(
+        'CREATE INDEX IF NOT EXISTS idx_transactions_user_id ON transactions(user_id)'
+    )
+    cursor.execute(
+        'CREATE INDEX IF NOT EXISTS idx_transactions_timestamp ON transactions(timestamp DESC)'
+    )
+
     conn.commit()
     conn.close()
 
 
 # ==== Database Helper Functions ====
 def get_user_data(user_id):
-    """Get user data, create if doesn't exist"""
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
+    """Enhanced get user data with proper error handling"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM users WHERE user_id = ?',
+                           (user_id, ))
+            user = cursor.fetchone()
 
-    cursor.execute('SELECT * FROM users WHERE user_id = ?', (user_id, ))
-    user = cursor.fetchone()
+            if not user:
+                cursor.execute(
+                    '''
+                    INSERT INTO users (user_id, balance, sp, streak)
+                    VALUES (?, 0, 100, 0)
+                ''', (user_id, ))
+                conn.commit()
+                cursor.execute('SELECT * FROM users WHERE user_id = ?',
+                               (user_id, ))
+                user = cursor.fetchone()
 
-    if not user:
-        cursor.execute(
-            '''
-            INSERT INTO users (user_id, balance, sp, streak)
-            VALUES (?, 0, 100, 0)
-        ''', (user_id, ))
-        conn.commit()
-        cursor.execute('SELECT * FROM users WHERE user_id = ?', (user_id, ))
-        user = cursor.fetchone()
+            return {
+                'user_id': user[0],
+                'balance': user[1],
+                'sp': user[2],
+                'last_claim': user[3],
+                'streak': user[4],
+                'created_at': user[5]
+            }
+    except Exception as e:
+        logger.error(f"❌ get_user_data error: {e}")
+        # Return default data on error
+        return {
+            'user_id': user_id,
+            'balance': 0,
+            'sp': 100,
+            'last_claim': None,
+            'streak': 0,
+            'created_at': None
+        }
 
-    conn.close()
-    return {
-        'user_id': user[0],
-        'balance': user[1],
-        'sp': user[2],
-        'last_claim': user[3],
-        'streak': user[4],
-        'created_at': user[5]
-    }
+
+async def _safe_update_user_data(user_id, **kwargs):
+    """Helper function to perform the actual database update (async)"""
+    # Validate allowed fields to prevent injection
+    ALLOWED_FIELDS = {'balance', 'sp', 'last_claim', 'streak'}
+
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+
+            # Ensure user exists first
+            cursor.execute('SELECT user_id FROM users WHERE user_id = ?',
+                           (user_id, ))
+            if not cursor.fetchone():
+                cursor.execute(
+                    'INSERT INTO users (user_id, balance, sp, streak) VALUES (?, 0, 100, 0)',
+                    (user_id, ))
+
+            # Build update query with validated fields only
+            valid_updates = {
+                k: v
+                for k, v in kwargs.items() if k in ALLOWED_FIELDS
+            }
+
+            if valid_updates:
+                placeholders = ', '.join(f'{field} = ?'
+                                         for field in valid_updates.keys())
+                query = f'UPDATE users SET {placeholders} WHERE user_id = ?'
+                values = list(valid_updates.values()) + [user_id]
+                cursor.execute(query, values)
+
+            conn.commit()
+            return True
+
+    except sqlite3.OperationalError as e:
+        logger.error(f"❌ Database error: {e}")
+        return False
+    except Exception as e:
+        logger.error(f"❌ Update error: {e}")
+        return False
+
+
+async def safe_update_user_data(user_id, **kwargs):
+    """Thread-safe user data update with retry logic (async wrapper)"""
+    max_retries = 3
+    retry_delay = 0.5
+
+    for attempt in range(max_retries):
+        try:
+            result = await _safe_update_user_data(user_id, **kwargs)
+            if result:
+                return True
+            else:
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delay * (2**attempt))
+                    continue
+                else:
+                    return False
+
+        except Exception as e:
+            logger.error(f"❌ Error during retry: {e}")
+            return False
+
+    return False
 
 
 def update_user_data(user_id, **kwargs):
-    """Update user data"""
-    try:
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-
-        # Get current data for transaction log
-        current_data = get_user_data(user_id)
-
-        # Build update query dynamically
-        fields = []
-        values = []
-        for key, value in kwargs.items():
-            if key in ['balance', 'sp', 'last_claim', 'streak']:
-                fields.append(f"{key} = ?")
-                values.append(value)
-
-        if fields:
-            values.append(user_id)
-            query = f"UPDATE users SET {', '.join(fields)} WHERE user_id = ?"
-            cursor.execute(query, values)
-            conn.commit()
-
-        conn.close()
-        return True
-    except Exception as e:
-        logger.error(f"❌ Database update error: {e}")
-        if 'conn' in locals():
-            conn.close()
-        return False
+    """Wrapper for safe_update_user_data to maintain compatibility"""
+    return asyncio.run(safe_update_user_data(user_id, **kwargs))
 
 
 def get_monthly_stats(user_id, month=None):
@@ -951,6 +1206,46 @@ def ensure_database_exists():
 ensure_database_exists()
 
 
+async def enhanced_startup():
+    """Enhanced startup with health checks and graceful degradation"""
+    logger.info("🚀 Enhanced startup sequence beginning...")
+
+    # Test database first
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM users")
+            logger.info("✅ Database connection verified")
+    except Exception as e:
+        logger.error(f"❌ Database startup failed: {e}")
+        return False
+
+    # Test Discord API
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(
+                total=10)) as session:
+            headers = {"Authorization": f"Bot {TOKEN}"}
+            async with session.get("https://discord.com/api/v10/users/@me",
+                                   headers=headers) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    logger.info(
+                        f"✅ Discord API connection verified: {data.get('username')}"
+                    )
+                else:
+                    logger.error(f"❌ Discord API error: {resp.status}")
+                    return False
+    except Exception as e:
+        logger.error(f"❌ Discord API test failed: {e}")
+        return False
+
+    # Initialize circuit breaker
+    api_circuit_breaker.state = CircuitState.CLOSED
+    logger.info("✅ Circuit breaker initialized")
+
+    return True
+
+
 # ==== Input Validation ====
 def validate_amount(amount_str, max_amount=1000000):
     """Validate and convert amount string to integer"""
@@ -1155,57 +1450,100 @@ async def api_health_monitor():
             if now - call_time < API_WINDOW
         ]
 
-        # Log API usage stats
-        if len(discord_api_calls) > 0:
-            usage_percentage = (len(discord_api_calls) /
-                                DISCORD_API_LIMIT) * 100
-            if usage_percentage > 80:
-                logger.warning(
-                    f"⚠️ High API usage: {usage_percentage:.1f}% ({len(discord_api_calls)}/{DISCORD_API_LIMIT})"
-                )
-            else:
-                logger.info(
-                    f"📊 API usage: {usage_percentage:.1f}% ({len(discord_api_calls)}/{DISCORD_API_LIMIT})"
-                )
-
-        # Clean old cooldown records (older than 24 hours)
+        # IMPROVED CLEANUP - Add size limits
         for user_id in list(user_command_cooldowns.keys()):
-            for command in list(user_command_cooldowns[user_id].keys()):
-                if now - user_command_cooldowns[user_id][
-                        command] > 86400:  # 24 hours
-                    del user_command_cooldowns[user_id][command]
+            user_commands = user_command_cooldowns[user_id]
+
+            # Remove expired cooldowns
+            for command in list(user_commands.keys()):
+                if now - user_commands[command] > 86400:  # 24 hours
+                    del user_commands[command]
 
             # Remove empty user records
-            if not user_command_cooldowns[user_id]:
+            if not user_commands:
                 del user_command_cooldowns[user_id]
+
+        # CRITICAL: Prevent memory explosion - limit total entries
+        if len(user_command_cooldowns) > 10000:  # Safety limit
+            logger.warning(
+                "⚠️ Cooldown dictionary too large, clearing old entries")
+            # Keep only the 1000 most recent entries
+            sorted_users = sorted(user_command_cooldowns.items(),
+                                  key=lambda x: max(x[1].values())
+                                  if x[1] else 0,
+                                  reverse=True)
+            user_command_cooldowns.clear()
+            user_command_cooldowns.update(dict(sorted_users[:1000]))
 
     except Exception as e:
         logger.error(f"❌ API health monitor error: {e}")
 
 
 async def main():
-    """Main async function with proper startup sequence"""
+    """Main async function with proper startup sequence and error recovery"""
     logger.info("🚀 Starting Discord Bot...")
 
-    # Test connection first
-    if not await test_bot_connection():
-        logger.error("❌ Bot token validation failed")
-        return
+    max_connection_retries = 5
+    retry_delay = 10  # seconds
 
-    # Create startup backup
-    await startup_backup()
+    for attempt in range(max_connection_retries):
+        try:
+            # Test connection first
+            logger.info(
+                f"🔍 Testing connection (attempt {attempt + 1}/{max_connection_retries})..."
+            )
+            if not await test_bot_connection():
+                logger.error("❌ Bot token validation failed")
+                if attempt < max_connection_retries - 1:
+                    logger.info(f"⏳ Retrying in {retry_delay} seconds...")
+                    await asyncio.sleep(retry_delay)
+                    continue
+                else:
+                    return
 
-    # Start the bot
+            # Create startup backup
+            await startup_backup()
+
+            # Start the bot
+            logger.info("🤖 Starting Discord bot connection...")
+            await bot.start(TOKEN)
+            break  # If we get here, bot started successfully
+
+        except discord.LoginFailure:
+            logger.error("❌ Invalid bot token")
+            break
+
+        except discord.HTTPException as e:
+            logger.error(f"❌ Discord HTTP error: {e}")
+            if attempt < max_connection_retries - 1:
+                logger.info(f"⏳ Retrying in {retry_delay} seconds...")
+                await asyncio.sleep(retry_delay)
+                retry_delay *= 2  # Exponential backoff
+            else:
+                logger.error("❌ Max retries exceeded")
+
+        except KeyboardInterrupt:
+            logger.info("🛑 Keyboard interrupt received")
+            break
+
+        except Exception as e:
+            logger.error(f"❌ Unexpected bot error: {e}")
+            if attempt < max_connection_retries - 1:
+                logger.info(f"⏳ Retrying in {retry_delay} seconds...")
+                await asyncio.sleep(retry_delay)
+                retry_delay *= 2
+            else:
+                logger.error("❌ Max retries exceeded")
+
+    # Cleanup
     try:
-        await bot.start(TOKEN)
-    except KeyboardInterrupt:
-        logger.info("🛑 Keyboard interrupt received")
-    except Exception as e:
-        logger.error(f"❌ Bot error: {e}")
-    finally:
         if not bot.is_closed():
+            logger.info("🛑 Closing bot connection...")
             await bot.close()
-        logger.info("🛑 Bot shutdown complete")
+    except:
+        pass
+
+    logger.info("🛑 Bot shutdown complete")
 
 
 # ==== Flask Setup ====
@@ -1218,24 +1556,47 @@ def home():
 
 
 @app.route('/health')
-def health():
-    """Enhanced health check for monitoring"""
+def enhanced_health():
+    """Enhanced health check with detailed status"""
+    status = {"status": "healthy", "timestamp": time.time()}
+
     try:
-        # Test database connection
-        conn = sqlite3.connect(DB_FILE)
-        conn.close()
+        # Test database
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM users")
+            user_count = cursor.fetchone()[0]
+            status["database"] = "healthy"
+            status["user_count"] = user_count
 
         # Test bot status
-        bot_status = "online" if bot.is_ready() else "offline"
+        status["bot_connected"] = bot.is_ready()
+        status["guilds_count"] = len(bot.guilds) if bot.guilds else 0
 
-        return {
-            "status": "healthy",
-            "bot_status": bot_status,
-            "database": "connected",
-            "backup_configured": github_backup is not None
-        }
+        # API status
+        status["circuit_breaker"] = api_circuit_breaker.state.value
+        status[
+            "rate_limit_remaining"] = discord_rate_limiter.max_requests - len(
+                discord_rate_limiter.requests)
+
+        # Memory usage (optional - only if psutil is available)
+        try:
+            import psutil
+            process = psutil.Process()
+            status["memory_mb"] = round(
+                process.memory_info().rss / 1024 / 1024, 1)
+            status["cpu_percent"] = process.cpu_percent()
+        except ImportError:
+            status["memory_info"] = "psutil not available"
+
+        return status, 200
+
     except Exception as e:
-        return {"status": "unhealthy", "error": str(e)}, 500
+        return {
+            "status": "unhealthy",
+            "error": str(e),
+            "timestamp": time.time()
+        }, 503
 
 
 # ==== Discord Bot Setup ====
@@ -1330,119 +1691,56 @@ async def on_error(event, *args, **kwargs):
 
 @bot.event
 async def on_command_error(ctx, error):
-    """Enhanced command error handler with comprehensive coverage"""
+    """Enhanced error handler with better user experience"""
 
-    # Handle cooldown errors (already handled by decorator)
+    # Log all errors for debugging
+    logger.error(f"Command error in {ctx.command}: {error}", exc_info=True)
+
+    # Don't handle cooldowns (decorator handles this)
     if isinstance(error, commands.CommandOnCooldown):
-        # Don't send duplicate cooldown messages since decorator handles this
         return
 
-    # Handle permission errors
-    elif isinstance(error, commands.MissingPermissions):
-        embed = discord.Embed(
-            title="🚫 **ACCESS DENIED**",
-            description=
-            "```diff\n- Insufficient permissions\n+ Administrator access required\n```",
-            color=0xFF0000)
+    # Create base embed for all errors
+    embed = discord.Embed(color=0xFF0000)
 
-        try:
-            await ctx.send(embed=embed)
-        except:
-            await ctx.send("🚫 You don't have permission to use this command.")
+    if isinstance(error, commands.MissingPermissions):
+        embed.title = "🚫 **INSUFFICIENT PERMISSIONS**"
+        embed.description = "```diff\n- Administrator access required\n```"
 
-    # Handle missing arguments
     elif isinstance(error, commands.MissingRequiredArgument):
-        embed = discord.Embed(
-            title="❌ **MISSING ARGUMENT**",
-            description=
-            f"```diff\n- Missing required parameter: {error.param.name}\n+ Use !help for correct usage\n```",
-            color=0xFF4500)
+        embed.title = "❌ **MISSING ARGUMENT**"
+        embed.description = f"```diff\n- Missing: {error.param.name}\n+ Use !help for examples\n```"
 
-        try:
-            await ctx.send(embed=embed)
-        except:
-            await ctx.send(f"❌ Missing required argument: {error.param.name}")
-
-    # Handle bad arguments (wrong type, etc.)
     elif isinstance(error, commands.BadArgument):
-        embed = discord.Embed(
-            title="⚠️ **INVALID ARGUMENT**",
-            description=
-            "```diff\n- Invalid argument provided\n+ Check your input and try again\n```",
-            color=0xFF6347)
+        embed.title = "⚠️ **INVALID ARGUMENT**"
+        embed.description = "```diff\n- Check your input format\n+ Use !help for examples\n```"
 
-        try:
-            await ctx.send(embed=embed)
-        except:
-            await ctx.send("⚠️ Invalid argument provided.")
-
-    # Handle command not found (optional - you can remove this to ignore)
     elif isinstance(error, commands.CommandNotFound):
-        # Silently ignore unknown commands
-        return
+        # Suggest similar commands
+        available_commands = [cmd.name for cmd in bot.commands]
+        similar = [
+            cmd for cmd in available_commands if error.args[0].lower() in cmd
+        ]
 
-    # Handle user input errors
-    elif isinstance(error, commands.UserInputError):
-        embed = discord.Embed(
-            title="📝 **INPUT ERROR**",
-            description=
-            "```diff\n- Invalid input format\n+ Use !help for command examples\n```",
-            color=0xFFB347)
+        if similar:
+            embed.title = "❓ **UNKNOWN COMMAND**"
+            embed.description = f"```diff\n- Command not found\n+ Similar: {', '.join(similar[:3])}\n```"
+            await ctx.send(embed=embed, delete_after=10)
+        return  # Don't show error for unknown commands without suggestions
 
-        try:
-            await ctx.send(embed=embed)
-        except:
-            await ctx.send("📝 Invalid input. Use !help for guidance.")
-
-    # Handle bot missing permissions
-    elif isinstance(error, commands.BotMissingPermissions):
-        missing_perms = ', '.join(error.missing_permissions)
-        embed = discord.Embed(
-            title="🤖 **BOT PERMISSION ERROR**",
-            description=
-            f"```diff\n- Bot lacks required permissions\n+ Missing: {missing_perms}\n```",
-            color=0xFF1744)
-
-        try:
-            await ctx.send(embed=embed)
-        except:
-            await ctx.send(f"🤖 Bot missing permissions: {missing_perms}")
-
-    # Handle check failures (custom command checks)
-    elif isinstance(error, commands.CheckFailure):
-        embed = discord.Embed(
-            title="🛡️ **ACCESS RESTRICTED**",
-            description=
-            "```diff\n- Command requirements not met\n+ Check role/permission requirements\n```",
-            color=0xFF6347)
-
-        try:
-            await ctx.send(embed=embed)
-        except:
-            await ctx.send(
-                "🛡️ You don't meet the requirements for this command.")
-
-    # Handle command disabled
-    elif isinstance(error, commands.DisabledCommand):
-        embed = discord.Embed(
-            title="🚫 **COMMAND DISABLED**",
-            description=
-            "```diff\n- This command is temporarily disabled\n+ Try again later\n```",
-            color=0x808080)
-
-        try:
-            await ctx.send(embed=embed)
-        except:
-            await ctx.send("🚫 This command is currently disabled.")
-
-    # Handle unexpected errors
     else:
-        # Log the full error for debugging
-        logger.error(f"❌ Unhandled command error in {ctx.command}: {error}",
-                     exc_info=True)
+        embed.title = "💥 **SYSTEM ERROR**"
+        embed.description = "```diff\n- An unexpected error occurred\n+ Please try again or contact support\n```"
 
-        # Call the global error handler for unhandled cases
-        await handle_global_error(ctx, error)
+    try:
+        await ctx.send(embed=embed, delete_after=15)
+    except:
+        # Fallback to simple text if embed fails
+        try:
+            await ctx.send("❌ An error occurred. Please try again.",
+                           delete_after=10)
+        except:
+            pass  # Ultimate fallback - just log it
 
 
 @bot.event
@@ -1817,22 +2115,36 @@ async def cloudbackup(ctx):
     await message.edit(embed=embed)
 
 
+def validate_discord_input(text, max_length=2000, allow_mentions=False):
+    """Validates Discord input to prevent common issues."""
+    if not isinstance(text, str):
+        return False, "Input must be a string."
+
+    if len(text) > max_length:
+        return False, f"Input exceeds maximum length of {max_length} characters."
+
+    if not allow_mentions and ("@" in text or "<@!" in text or "<@" in text):
+        return False, "Mentions are not allowed in this input."
+
+    # Add more checks as needed (e.g., profanity filter, disallowed characters)
+
+    return True, None
+
+
 @bot.command()
 @safe_command_wrapper
 @cooldown_check('usename')
 async def usename(ctx, member: discord.Member, *, new_nickname: str):
     """Use a name change card on someone"""
-    user_id = str(ctx.author.id)
-    user_data = get_user_data(user_id)
 
-    # Check if they have a name change card (you'll need to track ownership)
-    # For simplicity, let's check if they have enough balance as if buying it instantly
-    if user_data["balance"] < 10000:
-        embed = discord.Embed(
-            title="🚫 **NO NAME CHANGE CARD**",
-            description=
-            "```diff\n- You don't own a name change card\n+ Purchase one from !shop first\n```",
-            color=0xFF0000)
+    # ADD INPUT VALIDATION
+    is_valid, error_msg = validate_discord_input(new_nickname,
+                                                 max_length=32,
+                                                 allow_mentions=False)
+    if not is_valid:
+        embed = discord.Embed(title="❌ **INVALID NICKNAME**",
+                              description=f"```diff\n- {error_msg}\n```",
+                              color=0xFF0000)
         return await ctx.send(embed=embed)
 
     # Check if target has nickname lock
@@ -1865,12 +2177,14 @@ async def usename(ctx, member: discord.Member, *, new_nickname: str):
             reason=f"Name change card used by {ctx.author.display_name}")
 
         # Deduct cost and record the change
+        user_id = str(ctx.author.id)  # Add this line to get user_id
+        user_data = get_user_data(user_id)  # Add this line to get user_data
         new_balance = user_data["balance"] - 10000
         update_user_data(user_id, balance=new_balance)
 
         # Set expiry (24 hours from now)
         expires_at = (datetime.now(timezone.utc) +
-                      datetime.timedelta(hours=24)).isoformat()
+                      timedelta(hours=24)).isoformat()
 
         # Record the name change
         add_name_change_card(user_id, str(member.id), original_nick,
@@ -3240,21 +3554,37 @@ def run_flask():
 # ==== Main Execution ====
 if __name__ == "__main__":
     # Start Flask in a separate thread
-    flask_thread = Thread(target=run_flask)
-    flask_thread.daemon = True
+    flask_thread = Thread(target=run_flask, daemon=True)
     flask_thread.start()
     logger.info("🌐 Flask server started")
 
-    # Run the main bot with proper error handling
-    max_retries = 3
-    for attempt in range(max_retries):
+    # Run the bot with auto-restart capability
+    max_restart_attempts = 10
+    restart_delay = 30  # seconds between restarts
+
+    for restart_attempt in range(max_restart_attempts):
         try:
+            logger.info(
+                f"🔄 Bot startup attempt {restart_attempt + 1}/{max_restart_attempts}"
+            )
             asyncio.run(main())
+
+            # If we reach here, the bot shut down normally
+            logger.info("✅ Bot shut down normally")
             break
+
+        except KeyboardInterrupt:
+            logger.info("🛑 Manual shutdown requested")
+            break
+
         except Exception as e:
-            logger.error(f"❌ Bot startup attempt {attempt + 1} failed: {e}")
-            if attempt == max_retries - 1:
-                logger.error("❌ Max retries exceeded, shutting down")
-                raise
-            time.sleep(5)  # Wait before retry
-            logger.info(f"🔄 Retrying bot startup in 5 seconds...")
+            logger.error(f"❌ Bot crashed: {e}")
+
+            if restart_attempt < max_restart_attempts - 1:
+                logger.info(f"🔄 Restarting in {restart_delay} seconds...")
+                time.sleep(restart_delay)
+
+                # Exponential backoff for restart delay
+                restart_delay = min(restart_delay * 1.5, 300)  # Max 5 minutes
+            else:
+                logger.error("❌ Max restart attempts exceeded")
