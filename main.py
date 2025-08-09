@@ -481,19 +481,18 @@ async def handle_global_error(ctx, error):
         # Use a simple send without the safe_send wrapper to prevent recursion
         try:
             await ctx.send(embed=embed)
-            except Exception as send_error:
-                # Fallback: try sending a simple text message
+        except Exception as send_error:
+            # Fallback: try sending a simple text message
             try:
-                    await ctx.send(
-                        "❌ A system error occurred. Please contact an administrator."
-                    )
+                await ctx.send(
+                    "❌ A system error occurred. Please contact an administrator."
+                )
             except discord.DiscordException as send_error:
-                    # Ultimate fallback: just log it
+                # Ultimate fallback: just log it
                 logger.error(
-                        f"❌ Could not send error message to user {ctx.author.id}: {send_error}")
+                    f"❌ Could not send error message to user {ctx.author.id}: {send_error}")
                 pass
-                pass
-                
+
     except Exception as handler_error:
         # Don't let the error handler itself crash the bot
         logger.error(f"❌ Error in global error handler: {handler_error}")
@@ -1399,7 +1398,7 @@ async def monthly_conversion_check():
                             embed = discord.Embed(
                                 title="🌟 **MONTHLY ASCENSION COMPLETE** 🌟",
                                 description=
-                                f"```css\n[SPIRITUAL ENERGY CRYSTALLIZATION RITUAL]\n```\n💎 *The cosmic cycle renews, power has been preserved...*",
+                                "```css\n[SPIRIT ENERGY CRYSTALLIZATION RITUAL]\n```\n💎 *The cosmic cycle renews, power has been preserved...*",
                                 color=0x00FF7F)
 
                             embed.add_field(
@@ -1878,7 +1877,6 @@ async def daily(ctx):
 
 
 @bot.command()
-@safe_command_wrapper
 @commands.has_permissions(administrator=True)
 async def forceconvert(ctx):
     """Manually trigger monthly conversion (Admin only)"""
@@ -2013,7 +2011,7 @@ async def nextconvert(ctx):
     embed.add_field(
         name="⚗️ **WHAT HAPPENS?**",
         value=
-        "```diff\n+ All SP converts to SS (1:1)\n+ SP resets to 100 for everyone\n+ Monthly stats reset\n+ Automatic backup created\n```",
+        "```diff\n+ All Spirit Points → Spirit Stones\n+ SP resets to 100 for everyone\n+ Monthly stats reset\n+ Automatic backup created\n```",
         inline=False)
 
     embed.add_field(
@@ -2023,8 +2021,7 @@ async def nextconvert(ctx):
         inline=False)
 
     embed.set_footer(
-        text=
-        "💫 Monthly conversion happens automatically on the 1st of each month",
+        text="💫 Monthly conversion happens automatically on the 1st of each month",
         icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
 
     result, error = await safe_send(ctx, embed=embed)
@@ -2033,6 +2030,7 @@ async def nextconvert(ctx):
 
 
 @bot.command()
+@safe_command_wrapper
 @commands.has_permissions(administrator=True)
 async def cloudbackup(ctx):
     """Create a manual backup with GitHub cloud storage"""
@@ -2452,7 +2450,6 @@ async def restorebackup(ctx):
     await message.edit(embed=embed)
 
 
-# Admin command to check API status
 @bot.command()
 @safe_command_wrapper
 @commands.has_permissions(administrator=True)
@@ -2505,9 +2502,8 @@ async def apistatus(ctx):
                             value=f"```\n{command_list}\n```",
                             inline=True)
 
-        embed.set_footer(
-            text="🔄 Updates every 5 minutes • API monitoring active",
-            icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
+        embed.set_footer(text="🔄 Updates every 5 minutes • API monitoring active",
+                         icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
 
         result, error = await safe_send(ctx, embed=embed)
         if error:
@@ -2784,7 +2780,7 @@ async def exchange(ctx, amount: str):
         inline=False)
 
     embed.set_footer(
-        text="⚡ → 💎 Perfect 1:1 conversion rate achieved",
+        text="⚡ Perfect 1:1 conversion rate achieved",
         icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
 
     result, error = await safe_send(ctx, embed=embed)
