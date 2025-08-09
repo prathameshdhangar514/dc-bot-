@@ -73,7 +73,6 @@ class DatabasePool:
 
 
 # Initialize pool
-DB_FILE = "bot_database.db"  # Define DB_FILE here
 db_pool = DatabasePool(DB_FILE)
 
 # Set up logging
@@ -82,6 +81,9 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# Initialize placeholder variables (will be properly set later)
+bot = None
+github_backup = None
 
 def signal_handler(signum, frame):
     """Handle shutdown signals gracefully"""
@@ -957,8 +959,7 @@ class GitHubBackupManager:
             return False, []
 
 
-# Initialize GitHub backup manager
-github_backup = None
+# Initialize GitHub backup manager (overwrite the None placeholder)
 if GITHUB_TOKEN and GITHUB_BACKUP_REPO:
     github_backup = GitHubBackupManager(GITHUB_TOKEN, GITHUB_BACKUP_REPO)
 
@@ -1639,7 +1640,7 @@ def enhanced_health():
 
 # ==== Discord Bot Setup ====
 intents = discord.Intents.all()
-bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
+bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)  # Overwrite the None placeholder
 last_gamble_times = {}
 
 
