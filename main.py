@@ -1514,78 +1514,77 @@ async def api_health_monitor():
         logger.error(f"❌ API health monitor error: {e}")
 
 
-    async def main():
-    """Main async function with proper startup sequence and error recovery"""
-    logger.info("🚀 Starting Discord Bot...")
+async def main():
+        """Main async function with proper startup sequence and error recovery"""
+        logger.info("🚀 Starting Discord Bot...")
 
-    # Check if TOKEN is valid before proceeding
-    if not TOKEN:
-        logger.critical("❌ DISCORD_BOT_TOKEN not set in environment variables")
-        logger.critical(
-            "Please set your Discord bot token in the environment variables")
-        return
+        # Check if TOKEN is valid before proceeding
+        if not TOKEN:
+            logger.critical("❌ DISCORD_BOT_TOKEN not set in environment variables")
+            logger.critical("Please set your Discord bot token in the environment variables")
+            return
 
-    max_connection_retries = 5
-    retry_delay = 10  # seconds
+        max_connection_retries = 5
+        retry_delay = 10  # seconds
 
-    for attempt in range(max_connection_retries):
-        try:
-            # Test connection first
-            logger.info(
-                f"🔍 Testing connection (attempt {attempt + 1}/{max_connection_retries})..."
-            )
-            if not await test_bot_connection():
-                logger.error("❌ Bot token validation failed")
+        for attempt in range(max_connection_retries):
+            try:
+                # Test connection first
+                logger.info(f"🔍 Testing connection (attempt {attempt + 1}/{max_connection_retries})...")
+
+                if not await test_bot_connection():
+                    logger.error("❌ Bot token validation failed")
+                    if attempt < max_connection_retries - 1:
+                        logger.info(f"⏳ Retrying in {retry_delay} seconds...")
+                        await asyncio.sleep(retry_delay)
+                        continue
+                    else:
+                        logger.error("❌ All connection attempts failed")
+                        return
+
+                # Create startup backup
+                await startup_backup()
+
+                # Start the bot
+                logger.info("🤖 Starting Discord bot connection...")
+                await bot.start(TOKEN)
+                break  # If we get here, bot started successfully
+
+            except discord.LoginFailure:
+                logger.error("❌ Invalid bot token")
+                break
+
+            except discord.HTTPException as e:
+                logger.error(f"❌ Discord HTTP error: {e}")
                 if attempt < max_connection_retries - 1:
                     logger.info(f"⏳ Retrying in {retry_delay} seconds...")
                     await asyncio.sleep(retry_delay)
-                    continue
+                    retry_delay = min(retry_delay * 2, 300)  # Exponential backoff with max delay
                 else:
-                    return
+                    logger.error("❌ Max retries exceeded")
 
-            # Create startup backup
-            await startup_backup()
+            except KeyboardInterrupt:
+                logger.info("🛑 Keyboard interrupt received")
+                break
 
-            # Start the bot
-            logger.info("🤖 Starting Discord bot connection...")
-            await bot.start(TOKEN)
-            break  # If we get here, bot started successfully
+            except Exception as e:
+                logger.error(f"❌ Unexpected bot error: {e}")
+                if attempt < max_connection_retries - 1:
+                    logger.info(f"⏳ Retrying in {retry_delay} seconds...")
+                    await asyncio.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 2, 300)  # Exponential backoff with max delay
+                else:
+                    logger.error("❌ Max retries exceeded")
 
-        except discord.LoginFailure:
-            logger.error("❌ Invalid bot token")
-            break
-
-        except discord.HTTPException as e:
-            logger.error(f"❌ Discord HTTP error: {e}")
-            if attempt < max_connection_retries - 1:
-                logger.info(f"⏳ Retrying in {retry_delay} seconds...")
-                await asyncio.sleep(retry_delay)
-                retry_delay *= 2  # Exponential backoff
-            else:
-                logger.error("❌ Max retries exceeded")
-
-        except KeyboardInterrupt:
-            logger.info("🛑 Keyboard interrupt received")
-            break
-
+        # Cleanup
+        try:
+            if not bot.is_closed():
+                logger.info("🛑 Closing bot connection...")
+                await bot.close()
         except Exception as e:
-            logger.error(f"❌ Unexpected bot error: {e}")
-            if attempt < max_connection_retries - 1:
-                logger.info(f"⏳ Retrying in {retry_delay} seconds...")
-                await asyncio.sleep(retry_delay)
-                retry_delay *= 2
-            else:
-                logger.error("❌ Max retries exceeded")
+            logger.error(f"❌ Error during cleanup: {e}")
 
-    # Cleanup
-    try:
-        if not bot.is_closed():
-            logger.info("🛑 Closing bot connection...")
-            await bot.close()
-    except Exception as e:
-        logger.error(f"❌ Error during cleanup: {e}")
-
-    logger.info("🛑 Bot shutdown complete")
+        logger.info("🛑 Bot shutdown complete")
 
 
 # ==== Flask Setup ====

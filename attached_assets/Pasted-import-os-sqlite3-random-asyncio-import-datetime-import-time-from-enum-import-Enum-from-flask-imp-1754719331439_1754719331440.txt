@@ -1,0 +1,1640 @@
+import os, sqlite3, random, asyncio
+import datetime
+import time
+from enum import Enum
+from flask import Flask
+import discord
+from discord.ext import commands, tasks
+from threading import Thread
+from dotenv import load_dotenv
+import base64
+from typing import Optional
+import json
+import contextlib
+import threading
+from queue import Queue
+from concurrent.futures import ThreadPoolExecutor
+import signal
+import sys
+import aiohttp
+import requests
+import shutil
+from datetime import timezone, timedelta
+import logging
+from collections import defaultdict
+from collections import deque
+import functools
+from functools import lru_cache  # This should already be there, but verify it exists
+
+DB_LOCK = threading.Lock()
+DB_POOL = ThreadPoolExecutor(max_workers=3)
+
+
+@contextlib.contextmanager
+def get_db_connection():
+    with db_pool.get_connection() as conn:
+        yield conn
+
+
+class DatabasePool:
+
+    def __init__(self, db_file, max_connections=5):
+        self.db_file = db_file
+        self.max_connections = max_connections
+        self._pool = Queue(maxsize=max_connections)
+        self._lock = threading.Lock()
+        self._initialized = False
+
+    def _initialize_pool(self):
+        if not self._initialized:
+            with self._lock:
+                if not self._initialized:
+                    for _ in range(self.max_connections):
+                        conn = sqlite3.connect(self.db_file,
+                                               timeout=30,
+                                               check_same_thread=False)
+                        conn.execute("PRAGMA journal_mode=WAL")
+                        conn.execute("PRAGMA foreign_keys=ON")
+                        self._pool.put(conn)
+                    self._initialized = True
+
+    @contextlib.contextmanager
+    def get_connection(self):
+        self._initialize_pool()
+        conn = self._pool.get(timeout=10)
+        try:
+            yield conn
+        except sqlite3.Error as e:
+            logger.error(f"❌ Database error: {e}")
+            conn.rollback()
+            raise
+        finally:
+            self._pool.put(conn)
+
+# Define constants first
+DB_FILE = "bot_database.db"
+
+# Initialize database pool
+db_pool = DatabasePool(DB_FILE)
+
+
+# Set up logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# Initialize placeholder variables (will be properly set later)
+bot = None
+github_backup = None
+
+def signal_handler(signum, frame):
+    """Handle shutdown signals gracefully"""
+    signal_name = "SIGTERM" if signum == 15 else "SIGINT" if signum == 2 else f"Signal {signum}"
+    logger.info(f"🛑 Shutdown signal received: {signal_name}")
+
+    # For hosting platforms, we want to shut down gracefully
+    if bot and not bot.is_closed():
+        logger.info("🔄 Initiating graceful bot shutdown...")
+        try:
+            # Try to create a final backup
+            backup_file = create_backup_with_cloud_storage()
+            if backup_file and github_backup:
+                success, result = github_backup.upload_backup_to_github(
+                    backup_file)
+                if success:
+                    logger.info("✅ Emergency backup created before shutdown")
+        except Exception as e:
+            logger.error(f"❌ Emergency backup failed: {e}")
+
+        # Close the bot
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                loop.create_task(bot.close())
+        except Exception as e:
+            logger.exception(f"An unexpected error occurred: {e}")
+            pass
+
+    logger.info("🛑 Bot shutdown complete")
+    sys.exit(0)
+
+
+class CircuitState(Enum):
+    CLOSED = "closed"
+    OPEN = "open"
+    HALF_OPEN = "half_open"
+
+
+class AsyncCircuitBreaker:
+
+    def __init__(self, failure_threshold=5, timeout=60):
+        self.failure_threshold = failure_threshold
+        self.timeout = timeout
+        self.failure_count = 0
+        self.last_failure_time = 0
+        self.state = CircuitState.CLOSED
+        self._lock = asyncio.Lock()
+
+    async def call(self, func, *args, **kwargs):
+        async with self._lock:
+            now = time.time()
+
+            if self.state == CircuitState.OPEN:
+                if now - self.last_failure_time > self.timeout:
+                    self.state = CircuitState.HALF_OPEN
+                    logger.info("🔄 Circuit breaker transitioning to HALF_OPEN")
+                else:
+                    raise Exception(
+                        "Circuit breaker is OPEN - rejecting request")
+
+        try:
+            # Call the async function properly
+            if asyncio.iscoroutinefunction(func):
+                result = await func(*args, **kwargs)
+            else:
+                result = func(*args, **kwargs)
+
+            await self._on_success()
+            return result
+        except Exception as e:
+            logger.exception(f"An unexpected error occurred: {e}")
+            await self._on_failure()
+            raise
+
+    async def _on_success(self):
+        async with self._lock:
+            self.failure_count = 0
+            if self.state == CircuitState.HALF_OPEN:
+                self.state = CircuitState.CLOSED
+                logger.info("✅ Circuit breaker CLOSED - service recovered")
+
+    async def _on_failure(self):
+        async with self._lock:
+            self.failure_count += 1
+            self.last_failure_time = time.time()
+            if self.failure_count >= self.failure_threshold:
+                self.state = CircuitState.OPEN
+                logger.error("🔴 Circuit breaker OPEN - service failing")
+
+
+# Update the global circuit breaker
+api_circuit_breaker = AsyncCircuitBreaker(failure_threshold=3, timeout=120)
+
+
+class TimedCache:
+
+    def __init__(self, ttl_seconds=300):  # 5 minute TTL
+        self.cache = {}
+        self.ttl = ttl_seconds
+
+    def get(self, key):
+        if key in self.cache:
+            value, timestamp = self.cache[key]
+            if time.time() - timestamp < self.ttl:
+                return value
+            else:
+                del self.cache[key]
+        return None
+
+    def set(self, key, value):
+        self.cache[key] = (value, time.time())
+
+    def clear(self):
+        self.cache.clear()
+
+
+# Create cache instances
+user_cache = TimedCache(ttl_seconds=60)  # Cache user data for 1 minute
+leaderboard_cache = TimedCache(ttl_seconds=300)
+# Register signal handlers
+signal.signal(signal.SIGTERM, signal_handler)
+signal.signal(signal.SIGINT, signal_handler)
+
+# Rate limiting configuration
+COMMAND_COOLDOWNS = {
+    'daily': 86400,  # 24 hours
+    'coinflip': 60,  # 1 minute
+    'exchange': 10,  # 10 seconds
+    'shop': 5,  # 5 seconds
+    'buy': 30,  # 30 seconds
+    'ssbal': 3,  # 3 seconds
+    'spbal': 3,  # 3 seconds
+    'top': 10,  # 10 seconds
+    'lucky': 10,  # 10 seconds
+    'unlucky': 10,  # 10 seconds
+    'lose': 5,  # 5 seconds
+    'help': 5,  # 5 seconds
+    'sendsp': 5,  # ADD THIS - 5 seconds cooldown
+    'nextconvert': 10,  # 10 seconds
+}
+
+# Global rate limiting storage
+user_command_cooldowns = defaultdict(lambda: defaultdict(float))
+global_command_usage = defaultdict(list)
+
+# Discord API rate limiting
+API_WINDOW = 60  # seconds
+DISCORD_API_LIMIT = 45  # requests per window
+discord_api_calls = []
+
+
+class AdvancedRateLimit:
+
+    def __init__(self, max_requests=45, window=60):  # More conservative
+        self.max_requests = max_requests
+        self.window = window
+        self.requests = deque()
+        self.lock = asyncio.Lock()
+
+    async def acquire(self):
+        async with self.lock:
+            now = time.time()
+
+            # Remove old requests
+            while self.requests and self.requests[0] <= now - self.window:
+                self.requests.popleft()
+
+            # Check if we can make a request
+            if len(self.requests) >= self.max_requests:
+                sleep_time = self.window - (now - self.requests[0]) + 1
+                logger.warning(
+                    f"⚠️ Rate limit hit, sleeping {sleep_time:.1f}s")
+                await asyncio.sleep(sleep_time)
+                return await self.acquire()  # Recursive retry
+
+            self.requests.append(now)
+            return True
+
+
+discord_rate_limiter = AdvancedRateLimit(max_requests=45, window=60)
+
+
+def check_command_cooldown(user_id, command_name):
+    """Check if user can use a command (returns True if allowed)"""
+    if command_name not in COMMAND_COOLDOWNS:
+        return True, 0
+
+    now = time.time()
+    last_used = user_command_cooldowns[str(user_id)][command_name]
+    cooldown = COMMAND_COOLDOWNS[command_name]
+
+    if now - last_used < cooldown:
+        remaining = cooldown - (now - last_used)
+        return False, remaining
+
+    user_command_cooldowns[str(user_id)][command_name] = now
+    return True, 0
+
+
+# REPLACE enhanced_safe_api_call function:
+async def enhanced_safe_api_call(func, *args, **kwargs):
+    """Enhanced API call with circuit breaker and exponential backoff"""
+    max_retries = 3
+    base_delay = 1  # Reduced from 2
+
+    for attempt in range(max_retries):
+        try:
+            # Acquire rate limit token first
+            await discord_rate_limiter.acquire()
+
+            # Use the async circuit breaker properly
+            result = await api_circuit_breaker.call(func, *args, **kwargs)
+            return result, None
+
+        except discord.HTTPException as e:
+            if e.status == 429:
+                # Get retry_after from Discord's response
+                retry_after = getattr(e, 'retry_after',
+                                      base_delay * (2**attempt))
+                retry_after = min(retry_after, 60)  # Max 1 minute
+                logger.warning(f"⚠️ Rate limited, waiting {retry_after:.1f}s")
+                await asyncio.sleep(retry_after)
+                continue
+            elif e.status >= 500:
+                delay = min(base_delay * (2**attempt), 30)
+                logger.error(
+                    f"❌ Discord server error {e.status}, waiting {delay}s")
+                await asyncio.sleep(delay)
+                continue
+            else:
+                return None, f"Discord API Error: {e.status}"
+
+        except asyncio.TimeoutError:
+            delay = min(base_delay * (2**attempt), 15)
+            logger.warning(f"⚠️ Timeout, retrying in {delay}s")
+            await asyncio.sleep(delay)
+            continue
+
+        except Exception as e:
+            logger.error(f"❌ API call error: {e}")
+            if attempt == max_retries - 1:
+                return None, str(e)
+            await asyncio.sleep(base_delay * (2**attempt))
+
+    return None, "Max retries exceeded"
+
+
+async def safe_api_call(func, *args, **kwargs):
+    """Simple wrapper for the enhanced API call function"""
+    # Track API calls for monitoring
+    discord_api_calls.append(time.time())
+    result, error = await enhanced_safe_api_call(func, *args, **kwargs)
+    return result, error
+
+
+# Command cooldown decorator
+def cooldown_check(command_name=None):
+    """Decorator to add cooldown checking to commands"""
+
+    def decorator(func):
+
+        @functools.wraps(func)
+        async def cooldown_wrapper(ctx, *args, **kwargs):
+            cmd_name = command_name or func.__name__
+            user_id = ctx.author.id
+
+            can_use, remaining = check_command_cooldown(user_id, cmd_name)
+
+            if not can_use:
+                hours = int(remaining // 3600)
+                minutes = int((remaining % 3600) // 60)
+                seconds = int(remaining % 60)
+
+                if hours > 0:
+                    time_str = f"{hours}h {minutes}m {seconds}s"
+                elif minutes > 0:
+                    time_str = f"{minutes}m {seconds}s"
+                else:
+                    time_str = f"{seconds}s"
+
+                embed = discord.Embed(
+                    title="⏰ **COMMAND COOLDOWN**",
+                    description=
+                    f"```diff\n- Command '{cmd_name}' is on cooldown\n+ Try again in {time_str}\n```\n🌀 *The cosmic forces need time to recharge...*",
+                    color=0xFF6347)
+
+                embed.set_footer(
+                    text=
+                    f"⚡ Cooldown prevents API overload • {ctx.author.display_name}",
+                    icon_url=ctx.author.avatar.url
+                    if ctx.author.avatar else None)
+
+                result, error = await safe_api_call(ctx.send, embed=embed)
+                if error:
+                    logger.error(f"❌ Failed to send cooldown message: {error}")
+                return
+
+            # Execute the original command
+            try:
+                await func(ctx, *args, **kwargs)
+            except Exception as e:
+                logger.error(f"❌ Error in command {cmd_name}: {e}")
+
+                embed = discord.Embed(
+                    title="❌ **COMMAND ERROR**",
+                    description=
+                    "```diff\n- An error occurred while processing your command\n+ Please try again later\n```",
+                    color=0xFF0000)
+
+                result, error = await safe_api_call(ctx.send, embed=embed)
+                if error:
+                    logger.error(f"❌ Failed to send error message: {error}")
+
+        return cooldown_wrapper
+
+    return decorator
+
+
+def safe_command_wrapper(func):
+    """Decorator to add extra error protection to critical commands"""
+
+    @functools.wraps(func)
+    async def wrapper(ctx, *args, **kwargs):
+        try:
+            await func(ctx, *args, **kwargs)
+        except Exception as e:
+            logger.error(f"❌ Critical error in {func.__name__}: {e}",
+                         exc_info=True)
+
+            # Send a simple error message without fancy embeds
+            try:
+                await ctx.send(
+                    "❌ An unexpected error occurred. The issue has been logged."
+                )
+            except discord.DiscordException as e:
+                logger.error(
+                    f"❌ Could not send error message to user {ctx.author.id}: {e}"
+                )
+                pass  # If we can't even send a simple message, just log it
+
+    return wrapper
+
+
+# Enhanced message sending with rate limiting
+async def safe_send(ctx, content=None, embed=None, **kwargs):
+    """Safely send messages with rate limiting"""
+    return await safe_api_call(ctx.send,
+                               content=content,
+                               embed=embed,
+                               **kwargs)
+
+
+async def safe_edit(message, content=None, embed=None, **kwargs):
+    """Safely edit messages with rate limiting"""
+    return await safe_api_call(message.edit,
+                               content=content,
+                               embed=embed,
+                               **kwargs)
+
+
+async def safe_add_reaction(message, emoji):
+    """Safely add reactions with rate limiting"""
+    return await safe_api_call(message.add_reaction, emoji)
+
+
+async def safe_remove_roles(member, *roles):
+    """Safely remove roles with rate limiting"""
+    return await safe_api_call(member.remove_roles, *roles)
+
+
+async def safe_add_roles(member, *roles):
+    """Safely add roles with rate limiting"""
+    return await safe_api_call(member.add_roles, *roles)
+
+
+# Global error handler for uncaught exceptions
+async def handle_global_error(ctx, error):
+    """Handle global command errors with fallback protection"""
+    logger.error(f"❌ Global error in {ctx.command}: {error}")
+
+    if isinstance(error, commands.CommandOnCooldown):
+        return  # Already handled by cooldown system
+
+    try:
+        embed = discord.Embed(
+            title="💥 **SYSTEM ERROR**",
+            description=
+            "```diff\n- A system error occurred\n+ Our cosmic engineers have been notified\n```\n🔧 *Please try again in a few moments...*",
+            color=0xFF1744)
+
+        embed.add_field(name="🆘 **Error Code**",
+                        value=f"```\n{type(error).__name__}\n```",
+                        inline=True)
+
+        embed.set_footer(
+            text="🛠️ If this persists, contact an administrator",
+            icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
+
+        # Use a simple send without the safe_send wrapper to prevent recursion
+        try:
+            await ctx.send(embed=embed)
+        except Exception as embed_send_error:
+            # Fallback: try sending a simple text message
+            logger.error(f"❌ Error sending embed: {embed_send_error}")
+            try:
+                await ctx.send(
+                    "❌ A system error occurred. Please contact an administrator."
+                )
+            except discord.DiscordException as text_send_error:
+                # Ultimate fallback: just log it
+                logger.error(
+                    f"❌ Could not send error message to user {ctx.author.id}: {text_send_error}"
+                )
+                pass
+
+    except Exception as handler_error:
+        # Don't let the error handler itself crash the bot
+        logger.error(f"❌ Error in global error handler: {handler_error}")
+
+
+load_dotenv()
+TOKEN = os.getenv("DISCORD_BOT_TOKEN")
+
+# ==== Constants ====
+ROLE_ID_TEMP_ADMIN = 1393927331101544539  # Replace with actual ID
+ROLE_ID_HMW = 1393927051685400790  # Replace with actual HMW role ID
+ROLE_ID_ADMIN = 1397799884790169771  # Replace with actual Admin role ID
+ROLE_ID_BOOSTER = 1393289422241271940  # Replace with actual Server Booster role ID
+ROLE_ID_OWNER = 1393074903716073582
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+GITHUB_BACKUP_REPO = os.getenv(
+    "GITHUB_BACKUP_REPO")  # Format: "username/repo-name"
+GITHUB_API_BASE = "https://api.github.com"
+
+SHOP_ITEMS = {
+    "nickname_lock": {
+        "price": 5000,
+        "desc": "🔒 Locks your nickname from changes"
+    },
+    "temp_admin": {
+        "price": 25000,
+        "desc": "⚡ Gives temporary admin role for 1 hour"
+    },
+    "hmw_role": {
+        "price": 50000,
+        "desc": "👑 Grants the prestigious HMW role"
+    },
+    "name_change_card": {  # ADD THIS NEW ITEM
+        "price": 10000,
+        "desc": "🃏 Change someone's nickname for 24 hours"
+    },
+}
+
+
+# ==== Database Setup ====
+def init_database():
+    """Initialize SQLite database with all required tables"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+
+    # Users table for economy data
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            user_id TEXT PRIMARY KEY,
+            balance INTEGER DEFAULT 0,
+            sp INTEGER DEFAULT 100,
+            last_claim TEXT,
+            streak INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    # Monthly stats table for gambling tracking
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS monthly_stats (
+            user_id TEXT,
+            month TEXT,
+            wins INTEGER DEFAULT 0,
+            losses INTEGER DEFAULT 0,
+            PRIMARY KEY (user_id, month),
+            FOREIGN KEY (user_id) REFERENCES users (user_id)
+        )
+    ''')
+
+    # Nickname locks table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS nickname_locks (
+            user_id TEXT PRIMARY KEY,
+            locked_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    # Temporary admins table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS temp_admins (
+            user_id TEXT PRIMARY KEY,
+            expires_at TEXT,
+            guild_id TEXT,
+            granted_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    # Add this table creation in init_database() function
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS name_change_cards (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            owner_id TEXT,
+            target_id TEXT,
+            original_nickname TEXT,
+            new_nickname TEXT,
+            expires_at TEXT,
+            guild_id TEXT,
+            used_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    # Transactions log for audit trail
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS transactions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT,
+            transaction_type TEXT,
+            amount INTEGER,
+            balance_before INTEGER,
+            balance_after INTEGER,
+            description TEXT,
+            timestamp TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    cursor.execute(
+        'CREATE INDEX IF NOT EXISTS idx_users_balance ON users(balance DESC)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_users_sp ON users(sp DESC)')
+    cursor.execute(
+        'CREATE INDEX IF NOT EXISTS idx_monthly_stats_month ON monthly_stats(month)')
+    cursor.execute(
+        'CREATE INDEX IF NOT EXISTS idx_monthly_stats_losses ON monthly_stats(losses DESC)'
+    )
+    cursor.execute(
+        'CREATE INDEX IF NOT EXISTS idx_temp_admins_expires ON temp_admins(expires_at)'
+    )
+    cursor.execute(
+        'CREATE INDEX IF NOT EXISTS idx_name_change_cards_expires ON name_change_cards(expires_at)'
+    )
+    cursor.execute(
+        'CREATE INDEX IF NOT EXISTS idx_transactions_user_id ON transactions(user_id)'
+    )
+    cursor.execute(
+        'CREATE INDEX IF NOT EXISTS idx_transactions_timestamp ON transactions(timestamp DESC)'
+    )
+
+    conn.commit()
+    conn.close()
+
+
+# ==== Database Helper Functions ====
+def get_user_data(user_id):
+    """Enhanced get user data with proper error handling"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM users WHERE user_id = ?',
+                           (user_id, ))
+            user = cursor.fetchone()
+
+            if not user:
+                cursor.execute(
+                    '''
+                    INSERT INTO users (user_id, balance, sp, streak)
+                    VALUES (?, 0, 100, 0)
+                ''', (user_id, ))
+                conn.commit()
+                cursor.execute('SELECT * FROM users WHERE user_id = ?',
+                               (user_id, ))
+                user = cursor.fetchone()
+
+            return {
+                'user_id': user[0],
+                'balance': user[1],
+                'sp': user[2],
+                'last_claim': user[3],
+                'streak': user[4],
+                'created_at': user[5]
+            }
+    except Exception as e:
+        logger.error(f"❌ get_user_data error: {e}")
+        # Return default data on error
+        return {
+            'user_id': user_id,
+            'balance': 0,
+            'sp': 100,
+            'last_claim': None,
+            'streak': 0,
+            'created_at': None
+        }
+
+
+async def _safe_update_user_data(user_id, **kwargs):
+    """Helper function to perform the actual database update (async)"""
+    # Validate allowed fields to prevent injection
+    ALLOWED_FIELDS = {'balance', 'sp', 'last_claim', 'streak'}
+
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+
+            # Ensure user exists first
+            cursor.execute('SELECT user_id FROM users WHERE user_id = ?',
+                           (user_id, ))
+            if not cursor.fetchone():
+                cursor.execute(
+                    'INSERT INTO users (user_id, balance, sp, streak) VALUES (?, 0, 100, 0)',
+                    (user_id, ))
+
+            # Build update query with validated fields only
+            valid_updates = {
+                k: v
+                for k, v in kwargs.items() if k in ALLOWED_FIELDS
+            }
+
+            if valid_updates:
+                placeholders = ', '.join(f'{field} = ?'
+                                         for field in valid_updates.keys())
+                query = f'UPDATE users SET {placeholders} WHERE user_id = ?'
+                values = list(valid_updates.values()) + [user_id]
+                cursor.execute(query, values)
+
+            conn.commit()
+            return True
+
+    except sqlite3.OperationalError as e:
+        logger.error(f"❌ Database error: {e}")
+        return False
+    except Exception as e:
+        logger.error(f"❌ Update error: {e}")
+        return False
+
+
+async def safe_update_user_data(user_id, **kwargs):
+    """Thread-safe user data update with retry logic (async wrapper)"""
+    max_retries = 3
+    retry_delay = 0.5
+
+    for attempt in range(max_retries):
+        try:
+            result = await _safe_update_user_data(user_id, **kwargs)
+            if result:
+                return True
+            else:
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delay * (2**attempt))
+                    continue
+                else:
+                    return False
+
+        except Exception as e:
+            logger.error(f"❌ Error during retry: {e}")
+            return False
+
+    return False
+
+
+def update_user_data(user_id, **kwargs):
+    """Wrapper for safe_update_user_data to maintain compatibility"""
+    return asyncio.run(safe_update_user_data(user_id, **kwargs))
+
+
+def get_monthly_stats(user_id, month=None):
+    """Get monthly gambling stats for user"""
+    if not month:
+        month = datetime.datetime.now(timezone.utc).strftime("%Y-%m")
+
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        '''
+        SELECT wins, losses FROM monthly_stats
+        WHERE user_id = ? AND month = ?
+    ''', (user_id, month))
+
+    result = cursor.fetchone()
+    conn.close()
+
+    if result:
+        return {'wins': result[0], 'losses': result[1]}
+    return {'wins': 0, 'losses': 0}
+
+
+async def test_bot_connection():
+    """Test bot connection before full startup"""
+    try:
+        async with aiohttp.ClientSession() as session:
+            headers = {"Authorization": f"Bot {TOKEN}"}
+            async with session.get("https://discord.com/api/v10/users/@me",
+                                   headers=headers) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    logger.info(
+                        f"✅ Bot token valid for: {data.get('username')}")
+                    return True
+                else:
+                    logger.error(f"❌ Invalid bot token: {resp.status}")
+                    return False
+    except Exception as e:
+        logger.error(f"❌ Connection test failed: {e}")
+        return False
+
+
+async def startup_backup():
+    """Create backup on startup"""
+    try:
+        if github_backup and os.path.exists(DB_FILE):
+            backup_file = create_backup_with_cloud_storage()
+            if backup_file:
+                success, result = github_backup.upload_backup_to_github(
+                    backup_file)
+                if success:
+                    logger.info("✅ Startup backup created")
+                    return True
+        return False
+    except Exception as e:
+        logger.error(f"❌ Startup backup failed: {e}")
+        return False
+
+
+def update_monthly_stats(user_id, win_amount=0, loss_amount=0, month=None):
+    """Update monthly gambling stats"""
+    if not month:
+        month = datetime.datetime.now(timezone.utc).strftime("%Y-%m")
+
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        '''
+        INSERT OR REPLACE INTO monthly_stats (user_id, month, wins, losses)
+        VALUES (?, ?,
+            COALESCE((SELECT wins FROM monthly_stats WHERE user_id = ? AND month = ?), 0) + ?,
+            COALESCE((SELECT losses FROM monthly_stats WHERE user_id = ? AND month = ?), 0) + ?)
+    ''', (user_id, month, user_id, month, win_amount, user_id, month,
+          loss_amount))
+
+    conn.commit()
+    conn.close()
+
+
+class GitHubBackupManager:
+
+    def __init__(self, token, repo):
+        self.token = token
+        self.repo = repo
+        self.headers = {
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github.v3+json",
+            "Content-Type": "application/json"
+        }
+
+    def upload_backup_to_github(self, backup_file_path):
+        """Upload backup file to GitHub repository"""
+        try:
+            # Read the backup file
+            with open(backup_file_path, 'rb') as f:
+                file_content = f.read()
+
+            # Encode file content to base64
+            encoded_content = base64.b64encode(file_content).decode('utf-8')
+
+            # Create filename for GitHub
+            filename = os.path.basename(backup_file_path)
+            github_path = f"backups/{filename}"
+
+            # Check if file already exists
+            check_url = f"{GITHUB_API_BASE}/repos/{self.repo}/contents/{github_path}"
+            check_response = requests.get(check_url, headers=self.headers)
+
+            # Prepare the commit data
+            commit_data = {
+                "message": f"🤖 Auto backup: {filename}",
+                "content": encoded_content,
+                "branch": "main"
+            }
+
+            # If file exists, we need the SHA for update
+            if check_response.status_code == 200:
+                existing_file = check_response.json()
+                commit_data["sha"] = existing_file["sha"]
+
+            # Upload/update the file
+            upload_url = f"{GITHUB_API_BASE}/repos/{self.repo}/contents/{github_path}"
+            response = requests.put(upload_url,
+                                    headers=self.headers,
+                                    json=commit_data)
+
+            if response.status_code in [200, 201]:
+                return True, response.json()
+            else:
+                return False, f"GitHub API Error: {response.status_code} - {response.text}"
+
+        except Exception as e:
+            return False, str(e)
+
+    def download_backup_from_github(self, filename=None):
+        """Download backup file from GitHub repository"""
+        try:
+            if not filename:
+                # Get the latest backup file
+                list_url = f"{GITHUB_API_BASE}/repos/{self.repo}/contents/backups"
+                response = requests.get(list_url, headers=self.headers)
+
+                if response.status_code != 200:
+                    return False, "Failed to list backup files"
+
+                files = response.json()
+                backup_files = [f for f in files if f['name'].endswith('.db')]
+
+                if not backup_files:
+                    return False, "No backup files found in repository"
+
+                # Sort by name (which includes timestamp) to get latest
+                backup_files.sort(key=lambda x: x['name'], reverse=True)
+                latest_file = backup_files[0]
+                filename = latest_file['name']
+
+            # Download the specific file
+            download_url = f"{GITHUB_API_BASE}/repos/{self.repo}/contents/backups/{filename}"
+            response = requests.get(download_url, headers=self.headers)
+
+            if response.status_code != 200:
+                return False, f"Failed to download {filename}"
+
+            file_data = response.json()
+
+            # Decode base64 content
+            file_content = base64.b64decode(file_data['content'])
+
+            # Create local backups directory if it doesn't exist
+            if not os.path.exists("backups"):
+                os.makedirs("backups")
+
+            # Save the downloaded file locally
+            local_path = os.path.join("backups", filename)
+            with open(local_path, 'wb') as f:
+                f.write(file_content)
+
+            return True, local_path
+
+        except Exception as e:
+            return False, str(e)
+
+    def list_github_backups(self):
+        """List all backup files in GitHub repository"""
+        try:
+            list_url = f"{GITHUB_API_BASE}/repos/{self.repo}/contents/backups"
+            response = requests.get(list_url, headers=self.headers)
+
+            if response.status_code != 200:
+                return False, []
+
+            files = response.json()
+            backup_files = [f for f in files if f['name'].endswith('.db')]
+
+            # Sort by name (timestamp) in descending order
+            backup_files.sort(key=lambda x: x['name'], reverse=True)
+
+            return True, backup_files
+
+        except Exception as e:
+            logger.error(f"Error listing GitHub backups: {e}")
+            return False, []
+
+
+# Initialize GitHub backup manager (overwrite the None placeholder)
+if GITHUB_TOKEN and GITHUB_BACKUP_REPO:
+    github_backup = GitHubBackupManager(GITHUB_TOKEN, GITHUB_BACKUP_REPO)
+
+
+def create_backup_with_cloud_storage():
+    """Create a backup file and return the file path"""
+    try:
+        # Create backups directory if it doesn't exist
+        if not os.path.exists("backups"):
+            os.makedirs("backups")
+
+        # Generate backup filename with timestamp
+        timestamp = datetime.datetime.now(timezone.utc).strftime("%Y-%m")
+        backup_filename = f"backup_{timestamp}.db"
+        backup_path = os.path.join("backups", backup_filename)
+
+        # Copy the database file
+        shutil.copy2(DB_FILE, backup_path)
+
+        return backup_path
+    except Exception as e:
+        print(f"Backup creation error: {e}")
+        return None
+
+
+def restore_from_cloud():
+    """Restore database from the most recent backup (local or GitHub)"""
+    try:
+        latest_backup = None
+        restored_from_github = False
+
+        # Try to download latest from GitHub first
+        if github_backup:
+            success, result = github_backup.download_backup_from_github()
+            if success:
+                latest_backup = result
+                restored_from_github = True
+            else:
+                print(f"GitHub download failed: {result}")
+
+        # Fallback to local backups if GitHub fails
+        if not restored_from_github:
+            if not os.path.exists("backups"):
+                logger.warning(
+                    "⚠️ No backup found to restore from. Creating a new database."
+                )
+                init_database()
+                return True
+
+            backup_files = [
+                f for f in os.listdir("backups")
+                if f.startswith("backup_") and f.endswith(".db")
+            ]
+            if not backup_files:
+                logger.warning(
+                    "⚠️ No backup found to restore from. Creating a new database."
+                )
+                init_database()
+                return True
+
+            backup_files.sort(
+                key=lambda x: os.path.getmtime(os.path.join("backups", x)),
+                reverse=True)
+            latest_backup = os.path.join("backups", backup_files[0])
+
+        # Only proceed if we have a backup to restore
+        if latest_backup:
+            # Backup current database before restore
+            current_backup = f"pre_restore_backup_{datetime.datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.db"
+            shutil.copy2(DB_FILE, os.path.join("backups", current_backup))
+
+            # Restore from backup
+            shutil.copy2(latest_backup, DB_FILE)
+            logger.info(f"✅ Database restored from: {latest_backup}")
+            return True
+        else:
+            logger.warning(
+                "⚠️ No backup found to restore from. Creating a new database.")
+            init_database()
+            return True
+
+    except Exception as e:
+        logger.error(f"❌ Database restore failed: {e}")
+        return False
+
+
+def log_transaction(user_id,
+                    transaction_type,
+                    amount,
+                    balance_before,
+                    balance_after,
+                    description=""):
+    """Log transaction for audit trail"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        '''
+        INSERT INTO transactions (user_id, transaction_type, amount, balance_before, balance_after, description)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', (user_id, transaction_type, amount, balance_before, balance_after,
+          description))
+
+    conn.commit()
+    conn.close()
+
+
+def is_nickname_locked(user_id):
+    """Check if user has nickname lock"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+
+    cursor.execute('SELECT user_id FROM nickname_locks WHERE user_id = ?',
+                   (user_id, ))
+    result = cursor.fetchone()
+    conn.close()
+
+    return result is not None
+
+
+def add_name_change_card(owner_id, target_id, original_nick, new_nick,
+                         expires_at, guild_id):
+    """Add a name change card record"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        '''
+        INSERT INTO name_change_cards (owner_id, target_id, original_nickname, new_nickname, expires_at, guild_id)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', (owner_id, target_id, original_nick, new_nick, expires_at, guild_id))
+
+    conn.commit()
+    conn.close()
+
+
+def get_active_name_changes():
+    """Get all active name changes"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+
+    cursor.execute('''
+        SELECT id, owner_id, target_id, original_nickname, expires_at, guild_id
+        FROM name_change_cards
+    ''')
+    results = cursor.fetchall()
+    conn.close()
+
+    return [{
+        'id': r[0],
+        'owner_id': r[1],
+        'target_id': r[2],
+        'original_nickname': r[3],
+        'expires_at': r[4],
+        'guild_id': r[5]
+    } for r in results]
+
+
+def remove_name_change_card(card_id):
+    """Remove a name change card record"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+
+    cursor.execute('DELETE FROM name_change_cards WHERE id = ?', (card_id, ))
+    conn.commit()
+    conn.close()
+
+
+def add_nickname_lock(user_id):
+    """Add nickname lock for user"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        'INSERT OR REPLACE INTO nickname_locks (user_id) VALUES (?)',
+        (user_id, ))
+    conn.commit()
+    conn.close()
+
+
+def get_temp_admins():
+    """Get all temp admins"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+
+    cursor.execute('SELECT user_id, expires_at, guild_id FROM temp_admins')
+    results = cursor.fetchall()
+    conn.close()
+
+    return [{
+        'user_id': r[0],
+        'expires_at': r[1],
+        'guild_id': r[2]
+    } for r in results]
+
+
+def add_temp_admin(user_id, expires_at, guild_id):
+    """Add temporary admin"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        '''
+        INSERT OR REPLACE INTO temp_admins (user_id, expires_at, guild_id)
+        VALUES (?, ?, ?)
+    ''', (user_id, expires_at, guild_id))
+
+    conn.commit()
+    conn.close()
+
+
+def remove_temp_admin(user_id):
+    """Remove temporary admin"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+
+    cursor.execute('DELETE FROM temp_admins WHERE user_id = ?', (user_id, ))
+    conn.commit()
+    conn.close()
+
+
+def get_leaderboard(field='balance', limit=10):
+    """Get leaderboard by specified field"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+
+    query = f'SELECT user_id, {field} FROM users ORDER BY {field} DESC LIMIT ?'
+    cursor.execute(query, (limit, ))
+    results = cursor.fetchall()
+    conn.close()
+
+    return results
+
+
+def get_top_losers(month=None, limit=10):
+    """Get top losers for the month"""
+    if not month:
+        month = datetime.datetime.now(timezone.utc).strftime("%Y-%m")
+
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        '''
+        SELECT user_id, losses FROM monthly_stats
+        WHERE month = ? ORDER BY losses DESC LIMIT ?
+    ''', (month, limit))
+
+    results = cursor.fetchall()
+    conn.close()
+
+    return results
+
+
+# Initialize database on startup
+def ensure_database_exists():
+    """Ensure database exists, restore from backup if needed"""
+    if not os.path.exists(DB_FILE):
+        logger.warning("⚠️ Database not found, attempting restore...")
+        if github_backup and restore_from_cloud():
+            logger.info("✅ Database restored from backup")
+        else:
+            logger.info("📝 Creating new database...")
+            init_database()
+    else:
+        init_database()  # Ensure all tables exist
+
+
+# Initialize database on startup
+ensure_database_exists()
+
+
+async def enhanced_startup():
+    """Enhanced startup with health checks and graceful degradation"""
+    logger.info("🚀 Enhanced startup sequence beginning...")
+
+    # Test database first
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM users")
+            logger.info("✅ Database connection verified")
+    except Exception as e:
+        logger.error(f"❌ Database startup failed: {e}")
+        return False
+
+    # Test Discord API
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(
+                total=10)) as session:
+            headers = {"Authorization": f"Bot {TOKEN}"}
+            async with session.get("https://discord.com/api/v10/users/@me",
+                                   headers=headers) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    logger.info(
+                        f"✅ Discord API connection verified: {data.get('username')}"
+                    )
+                else:
+                    logger.error(f"❌ Discord API error: {resp.status}")
+                    return False
+    except Exception as e:
+        logger.error(f"❌ Discord API test failed: {e}")
+        return False
+
+    # Initialize circuit breaker
+    api_circuit_breaker.state = CircuitState.CLOSED
+    logger.info("✅ Circuit breaker initialized")
+
+    return True
+
+
+# ==== Input Validation ====
+def validate_amount(amount_str, max_amount=1000000):
+    """Validate and convert amount string to integer"""
+    if amount_str.lower() == "all":
+        return "all"
+    try:
+        amount = int(amount_str)
+        if amount <= 0:
+            return None
+        if amount > max_amount:
+            return None
+        return amount
+    except ValueError:
+        return None
+
+
+# ==== Auto Backup Task ====
+@tasks.loop(hours=6)  # Backup every 6 hours
+async def auto_backup():
+    """Automatically backup database to GitHub"""
+    try:
+        if github_backup:
+            backup_file = create_backup_with_cloud_storage()
+            if backup_file:
+                success, result = github_backup.upload_backup_to_github(
+                    backup_file)
+                if success:
+                    logger.info(f"✅ Auto backup completed: {backup_file}")
+                else:
+                    logger.error(f"❌ Auto backup failed: {result}")
+    except Exception as e:
+        logger.error(f"❌ Auto backup error: {e}")
+
+
+# ==== Monthly Conversion System ====
+
+
+def get_all_users_with_sp():
+    """Get all users who have SP > 0"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+
+    cursor.execute('SELECT user_id, sp, balance FROM users WHERE sp > 0')
+    results = cursor.fetchall()
+    conn.close()
+
+    return [{'user_id': r[0], 'sp': r[1], 'balance': r[2]} for r in results]
+
+
+def reset_monthly_stats():
+    """Reset monthly gambling stats for new month"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+
+    # Clear previous month's stats (keep only current month)
+    current_month = datetime.datetime.now(timezone.utc).strftime("%Y-%m")
+    cursor.execute('DELETE FROM monthly_stats WHERE month != ?',
+                   (current_month, ))
+
+    conn.commit()
+    conn.close()
+
+
+async def perform_monthly_conversion():
+    """Convert all SP to SS for all users and reset SP"""
+    try:
+        users_with_sp = get_all_users_with_sp()
+        total_converted = 0
+        conversion_count = 0
+
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+
+        for user_data in users_with_sp:
+            user_id = user_data['user_id']
+            sp_amount = user_data['sp']
+            old_balance = user_data['balance']
+
+            if sp_amount > 0:
+                # Convert SP to SS
+                new_balance = old_balance + sp_amount
+                new_sp = 100  # Reset to starting SP amount
+
+                # Update database
+                cursor.execute(
+                    '''
+                    UPDATE users SET balance = ?, sp = ? WHERE user_id = ?
+                ''', (new_balance, new_sp, user_id))
+
+                # Log transaction
+                log_transaction(user_id, "monthly_conversion", sp_amount, old_balance,
+                                new_balance,
+                                f"Monthly auto-conversion: {sp_amount} SP → SS")
+
+                total_converted += sp_amount
+                conversion_count += 1
+
+                logger.info(
+                    f"✅ Converted {sp_amount} SP → SS for user {user_id}")
+
+        conn.commit()
+        conn.close()
+
+        # Reset monthly gambling stats
+        reset_monthly_stats()
+
+        logger.info(
+            f"🎯 Monthly conversion complete: {conversion_count} users, {total_converted:,} SP converted"
+        )
+        return total_converted, conversion_count
+
+    except Exception as e:
+        logger.error(f"❌ Monthly conversion error: {e}")
+        return 0, 0
+
+
+@tasks.loop(hours=1)  # Check every hour
+async def monthly_conversion_check():
+    """Check if it's time for monthly conversion (1st of month, 00:00 UTC)"""
+    try:
+        now = datetime.datetime.now(timezone.utc)
+
+        # Check if it's the 1st day of the month and between 00:00-01:00
+        if now.day == 1 and now.hour == 0:
+            logger.info("🗓️ Monthly conversion time detected!")
+
+            total_converted, user_count = await perform_monthly_conversion()
+
+            if total_converted > 0:
+                # Create backup after monthly conversion
+                if github_backup:
+                    backup_file = create_backup_with_cloud_storage()
+                    if backup_file:
+                        success, result = github_backup.upload_backup_to_github(
+                            backup_file)
+                        if success:
+                            logger.info("✅ Post-conversion backup created")
+
+                # Notify in all guilds (optional)
+                if bot and bot.guilds:
+                    for guild in bot.guilds:
+                        # Find a general channel to announce - ensure it's a TextChannel
+                        channel = discord.utils.get(guild.text_channels,
+                                                    name='general')
+                        if not channel and guild.text_channels:
+                            channel = guild.text_channels[0]
+
+                        if channel and isinstance(channel, discord.TextChannel):
+                            try:
+                                embed = discord.Embed(
+                                    title="🌟 **MONTHLY ASCENSION COMPLETE** 🌟",
+                                    description=
+                                    "```css\n[SPIRIT ENERGY CRYSTALLIZATION RITUAL]\n```\n💎 *The cosmic cycle renews, power has been preserved...*",
+                                    color=0x00FF7F)
+
+                                embed.add_field(
+                                    name="⚗️ **CONVERSION RESULTS**",
+                                    value=
+                                    f"```yaml\nUsers Affected: {user_count:,}\nTotal SP Converted: {total_converted:,}\nConversion Rate: 1 SP = 1 SS\n```",
+                                    inline=False)
+
+                                embed.add_field(
+                                    name="🔄 **WHAT HAPPENED?**",
+                                    value=
+                                    "```diff\n+ All Spirit Points → Spirit Stones\n+ SP reset to 100 for everyone\n+ Monthly gambling stats reset\n+ Your wealth is now permanent!\n```",
+                                    inline=False)
+
+                                embed.add_field(
+                                    name="🚀 **NEW MONTH BEGINS**",
+                                    value=
+                                    "```fix\nFresh start for daily claims and gambling!\nYour converted SS is safe forever.\nTime to build your SP again!\n```",
+                                    inline=False)
+
+                                embed.set_footer(
+                                    text=
+                                    f"💫 Monthly Conversion • {now.strftime('%B %Y')}",
+                                    icon_url=guild.icon.url
+                                    if guild.icon else None)
+
+                                await channel.send(embed=embed)
+                                logger.info(
+                                    f"📢 Monthly conversion announced in {guild.name}"
+                                )
+
+                            except Exception as e:
+                                logger.error(
+                                    f"❌ Failed to announce in {guild.name}: {e}")
+                        else:
+                            logger.warning(
+                                f"❌ No suitable text channel found in {guild.name}"
+                            )
+                else:
+                    logger.warning("⚠️ Bot not ready or no guilds available for monthly conversion announcement")
+
+    except Exception as e:
+        logger.error(f"❌ Monthly conversion check error: {e}")
+
+
+# AP I Health monitoring
+@tasks.loop(minutes=5)
+async def api_health_monitor():
+    """Monitor API usage and rate limiting status"""
+    try:
+        now = time.time()
+
+        # Clean old API call records
+        global discord_api_calls
+        discord_api_calls = [
+            call_time for call_time in discord_api_calls
+            if now - call_time < API_WINDOW
+        ]
+
+        # IMPROVED CLEANUP - Add size limits
+        for user_id in list(user_command_cooldowns.keys()):
+            user_commands = user_command_cooldowns[user_id]
+
+            # Remove expired cooldowns
+            for command in list(user_commands.keys()):
+                if now - user_commands[command] > 86400:  # 24 hours
+                    del user_commands[command]
+
+            # Remove empty user records
+            if not user_commands:
+                del user_command_cooldowns[user_id]
+
+        # CRITICAL: Prevent memory explosion - limit total entries
+        if len(user_command_cooldowns) > 10000:  # Safety limit
+            logger.warning(
+                "⚠️ Cooldown dictionary too large, clearing old entries")
+            # Keep only the 1000 most recent entries
+            sorted_users = sorted(user_command_cooldowns.items(),
+                                  key=lambda x: max(x[1].values())
+                                  if x[1] else 0,
+                                  reverse=True)
+            user_command_cooldowns.clear()
+            user_command_cooldowns.update(dict(sorted_users[:1000]))
+
+    except Exception as e:
+        logger.error(f"❌ API health monitor error: {e}")
+
+
+async def main():
+        """Main async function with proper startup sequence and error recovery"""
+        logger.info("🚀 Starting Discord Bot...")
+
+        # Check if TOKEN is valid before proceeding
+        if not TOKEN:
+            logger.critical("❌ DISCORD_BOT_TOKEN not set in environment variables")
+            logger.critical("Please set your Discord bot token in the environment variables")
+            return
+
+        max_connection_retries = 5
+        retry_delay = 10  # seconds
+
+        for attempt in range(max_connection_retries):
+            try:
+                # Test connection first
+                logger.info(f"🔍 Testing connection (attempt {attempt + 1}/{max_connection_retries})...")
+
+                if not await test_bot_connection():
+                    logger.error("❌ Bot token validation failed")
+                    if attempt < max_connection_retries - 1:
+                        logger.info(f"⏳ Retrying in {retry_delay} seconds...")
+                        await asyncio.sleep(retry_delay)
+                        continue
+                    else:
+                        logger.error("❌ All connection attempts failed")
+                        return
+
+                # Create startup backup
+                await startup_backup()
+
+                # Start the bot
+                logger.info("🤖 Starting Discord bot connection...")
+                await bot.start(TOKEN)
+                break  # If we get here, bot started successfully
+
+            except discord.LoginFailure:
+                logger.error("❌ Invalid bot token")
+                break
+
+            except discord.HTTPException as e:
+                logger.error(f"❌ Discord HTTP error: {e}")
+                if attempt < max_connection_retries - 1:
+                    logger.info(f"⏳ Retrying in {retry_delay} seconds...")
+                    await asyncio.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 2, 300)  # Exponential backoff with max delay
+                else:
+                    logger.error("❌ Max retries exceeded")
+
+            except KeyboardInterrupt:
+                logger.info("🛑 Keyboard interrupt received")
+                break
+
+            except Exception as e:
+                logger.error(f"❌ Unexpected bot error: {e}")
+                if attempt < max_connection_retries - 1:
+                    logger.info(f"⏳ Retrying in {retry_delay} seconds...")
+                    await asyncio.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 2, 300)  # Exponential backoff with max delay
+                else:
+                    logger.error("❌ Max retries exceeded")
+
+        # Cleanup
+        try:
+            if not bot.is_closed():
+                logger.info("🛑 Closing bot connection...")
+                await bot.close()
+        except Exception as e:
+            logger.error(f"❌ Error during cleanup: {e}")
+
+        logger.info("🛑 Bot shutdown complete")
+
+
+# ==== Flask Setup ====
+app = Flask(__name__)
+
+
+@app.route('/')
+def home():
+    return "Bot is alive!"
+
+
+@app.route('/health')
+def enhanced_health():
+    """Enhanced health check with detailed status"""
+    status = {"status": "healthy", "timestamp": time.time()}
+
+    try:
+        # Test database
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM users")
+            user_count = cursor.fetchone()[0]
+            status["database"] = "healthy"
+            status["user_count"] = user_count
+
+        # Test bot status
+        status["bot_connected"] = bot.is_ready()
+        status["guilds_count"] = len(bot.guilds) if bot.guilds else 0
+
+        # API status
+        status["circuit_breaker"] = api_circuit_breaker.state.value
+        status[
+            "rate_limit_remaining"] = discord_rate_limiter.max_requests - len(
+                discord_rate_limiter.requests)
+
+        # Memory usage (optional - only if psutil is available)
+        try:
+            import psutil
+            process = psutil.Process()
+            status["memory_mb"] = round(
+                process.memory_info().rss / 1024 / 1024, 1)
+            status["cpu_percent"] = process.cpu_percent()
+        except ImportError:
+            status["memory_info"] = "psutil not available"
+
+        return status, 200
+
+    except Exception as e:
+        return {
+            "status": "unhealthy",
+            "error": str(e),
+            "timestamp": time.time()
+        }, 503
