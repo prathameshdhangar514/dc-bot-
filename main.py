@@ -108,7 +108,8 @@ def signal_handler(signum, frame):
             if loop.is_running():
                 loop.create_task(bot.close())
         except Exception as e:
-        pass
+            logger.exception(f"An unexpected error occurred: {e}")
+            pass
 
     logger.info("🛑 Bot shutdown complete")
     sys.exit(0)
@@ -152,6 +153,7 @@ class AsyncCircuitBreaker:
             await self._on_success()
             return result
         except Exception as e:
+            logger.exception(f"An unexpected error occurred: {e}")
             await self._on_failure()
             raise
 
@@ -415,9 +417,9 @@ def safe_command_wrapper(func):
                 await ctx.send(
                     "❌ An unexpected error occurred. The issue has been logged."
                 )
-            except:
-                pass  # If we can't even send a simple message, just log it
-
+            except discord.DiscordException as e:
+                logger.error(f"❌ Could not send error message to user {ctx.author.id}: {e}")
+                pass# If we can't even send a simple message, just log it
     return wrapper
 
 
@@ -479,18 +481,19 @@ async def handle_global_error(ctx, error):
         # Use a simple send without the safe_send wrapper to prevent recursion
         try:
             await ctx.send(embed=embed)
-        except Exception as send_error:
-            # Fallback: try sending a simple text message
+            except Exception as send_error:
+                # Fallback: try sending a simple text message
             try:
-                await ctx.send(
-                    "❌ A system error occurred. Please contact an administrator."
-                )
-            except:
-                # Ultimate fallback: just log it
+                    await ctx.send(
+                        "❌ A system error occurred. Please contact an administrator."
+                    )
+            except discord.DiscordException as send_error:
+                    # Ultimate fallback: just log it
                 logger.error(
-                    f"❌ Could not send error message to user {ctx.author.id}")
+                        f"❌ Could not send error message to user {ctx.author.id}: {send_error}")
                 pass
-
+                pass
+                
     except Exception as handler_error:
         # Don't let the error handler itself crash the bot
         logger.error(f"❌ Error in global error handler: {handler_error}")
