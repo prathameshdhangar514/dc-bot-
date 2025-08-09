@@ -3408,13 +3408,13 @@ async def errortest(ctx, error_type: str = "generic"):
 @bot.command()
 @safe_command_wrapper
 @cooldown_check('lose')
-async def lose(ctx, member: discord.Member = None):
+async def lose(ctx, member: Optional[discord.Member] = None):
     """Shows SP lost this month for the user or tagged member"""
     user = member or ctx.author
     user_id = str(user.id)
 
     # Get current month stats
-    current_month = datetime.now(timezone.utc).strftime("%Y-%m")
+    current_month = datetime.datetime.now(timezone.utc).strftime("%Y-%m")
     monthly_stats = get_monthly_stats(user_id, current_month)
 
     losses = monthly_stats.get("losses", 0)
@@ -3484,7 +3484,7 @@ async def lose(ctx, member: discord.Member = None):
     embed.set_thumbnail(url=user.avatar.url if user.avatar else None)
     embed.set_footer(
         text=
-        f"📅 {datetime.now(timezone.utc).strftime('%B %Y')} • Gamble responsibly",
+        f"📅 {datetime.datetime.now(timezone.utc).strftime('%B %Y')} • Gamble responsibly",
         icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
 
     result, error = await safe_send(ctx, embed=embed)
