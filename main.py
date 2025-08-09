@@ -2592,7 +2592,6 @@ async def backupstatus(ctx):
                 latest_path = os.path.join("backups", latest_backup)
                 latest_time = datetime.datetime.fromtimestamp(
                     os.path.getmtime(latest_path))
-                latest_size = os.path.getsize(latest_path)
                 total_size = sum(
                     os.path.getsize(os.path.join("backups", f))
                     for f in backup_files)
