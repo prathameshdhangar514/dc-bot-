@@ -2753,7 +2753,7 @@ async def exchange(ctx, amount: str):
     else:
         try:
             exchange_amount = int(amount)
-        except:
+        except ValueError:
             embed = discord.Embed(
                 title="❌ **INVALID INPUT**",
                 description=
