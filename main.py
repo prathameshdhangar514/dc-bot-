@@ -649,23 +649,26 @@ def init_database():
 
 # ==== Database Helper Functions ====
 def get_user_data(user_id):
-    """Enhanced get user data with proper error handling"""
+    """Fetch user data without overwriting restored values unless new"""
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute('SELECT * FROM users WHERE user_id = ?',
-                           (user_id, ))
+            cursor.execute(
+                'SELECT user_id, balance, sp, last_claim, streak, created_at FROM users WHERE user_id = ?',
+                (user_id, ))
             user = cursor.fetchone()
 
+            # If user not found, insert with default starting values
             if not user:
                 cursor.execute(
                     '''
                     INSERT INTO users (user_id, balance, sp, streak)
                     VALUES (?, 0, 100, 0)
-                ''', (user_id, ))
+                    ''', (user_id, ))
                 conn.commit()
-                cursor.execute('SELECT * FROM users WHERE user_id = ?',
-                               (user_id, ))
+                cursor.execute(
+                    'SELECT user_id, balance, sp, last_claim, streak, created_at FROM users WHERE user_id = ?',
+                    (user_id, ))
                 user = cursor.fetchone()
 
             return {
@@ -676,9 +679,9 @@ def get_user_data(user_id):
                 'streak': user[4],
                 'created_at': user[5]
             }
+
     except Exception as e:
         logger.error(f"❌ get_user_data error: {e}")
-        # Return default data on error
         return {
             'user_id': user_id,
             'balance': 0,
@@ -1222,6 +1225,7 @@ def get_top_losers(month=None, limit=10):
 # Initialize database on startup
 def ensure_database_exists():
     """Ensure database exists, restore from backup if needed"""
+    # If DB file missing, try restore
     if not os.path.exists(DB_FILE):
         logger.warning("⚠️ Database not found, attempting restore...")
         if github_backup and restore_from_cloud():
@@ -1230,11 +1234,22 @@ def ensure_database_exists():
             logger.info("📝 Creating new database...")
             init_database()
     else:
-        init_database()  # Ensure all tables exist
+        # Before touching DB, attempt to restore latest backup
+        if github_backup:
+            logger.info(
+                "🔄 Attempting to restore latest cloud backup before startup")
+            restore_from_cloud()
+        else:
+            logger.info("📂 Using existing local database")
 
+        # Ensure all required tables exist (non-destructive)
+        init_database()
 
-# Initialize database on startup
-ensure_database_exists()
+    # Clear caches after restore so fresh data loads
+    if 'user_cache' in globals():
+        user_cache.clear()
+    if 'leaderboard_cache' in globals():
+        leaderboard_cache.clear()
 
 
 async def enhanced_startup():
@@ -1884,9 +1899,9 @@ async def daily(ctx):
         new_sp = old_sp + reward
 
         await safe_update_user_data(user_id,
-                                   sp=new_sp,
-                                   last_claim=now.isoformat(),
-                                   streak=streak)
+                                    sp=new_sp,
+                                    last_claim=now.isoformat(),
+                                    streak=streak)
 
         # Log transaction
         log_transaction(user_id, "daily_claim", reward, old_sp, new_sp,
