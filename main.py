@@ -8,6 +8,7 @@ from discord.ext import commands, tasks
 from threading import Thread
 from dotenv import load_dotenv
 import base64
+from typing import Optional
 import json
 import contextlib
 import threading
@@ -2647,7 +2648,7 @@ async def backupstatus(ctx):
 @bot.command()
 @safe_command_wrapper
 @cooldown_check('ssbal')
-async def ssbal(ctx, member: discord.Member = None):
+async def ssbal(ctx, member: Optional[discord.Member] = None):
     user = member or ctx.author
     user_id = str(user.id)
     user_data = get_user_data(user_id)
@@ -2692,7 +2693,7 @@ async def ssbal(ctx, member: discord.Member = None):
 @bot.command()
 @safe_command_wrapper
 @cooldown_check('spbal')
-async def spbal(ctx, member: discord.Member = None):
+async def spbal(ctx, member: Optional[discord.Member] = None):
     user = member or ctx.author
     user_id = str(user.id)
     user_data = get_user_data(user_id)
