@@ -750,7 +750,7 @@ def update_user_data(user_id, **kwargs):
 def get_monthly_stats(user_id, month=None):
     """Get monthly gambling stats for user"""
     if not month:
-        month = datetime.now(timezone.utc).strftime("%Y-%m")
+        month = datetime.datetime.now(timezone.utc).strftime("%Y-%m")
 
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
@@ -809,7 +809,7 @@ async def startup_backup():
 def update_monthly_stats(user_id, win_amount=0, loss_amount=0, month=None):
     """Update monthly gambling stats"""
     if not month:
-        month = datetime.now(timezone.utc).strftime("%Y-%m")
+        month = datetime.datetime.now(timezone.utc).strftime("%Y-%m")
 
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
@@ -965,7 +965,7 @@ def create_backup_with_cloud_storage():
             os.makedirs("backups")
 
         # Generate backup filename with timestamp
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        timestamp =datetime.datetime.now(timezone.utc).strftime("%Y-%m")
         backup_filename = f"backup_{timestamp}.db"
         backup_path = os.path.join("backups", backup_filename)
 
@@ -1010,16 +1010,18 @@ def restore_from_cloud():
             latest_backup = os.path.join("backups", backup_files[0])
 
         # Backup current database before restore
-        current_backup = f"pre_restore_backup_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.db"
+        current_backup = f"pre_restore_backup_{datetime.datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.db"
         shutil.copy2(DB_FILE, os.path.join("backups", current_backup))
 
         # Restore from backup
-        shutil.copy2(latest_backup, DB_FILE)
-
-        return True
-    except Exception as e:
-        print(f"Restore error: {e}")
-        return False
+        if 'latest_backup' in locals():
+            shutil.copy2(latest_backup, DB_FILE)
+            logger.info(f"✅ Database restored from: {latest_backup}")  # Log source
+            return True
+        else:
+            logger.warning("⚠️ No backup found to restore from. Creating a new database.")
+            init_database() # Initialize a new database
+            return True # Return true since we initialized a new database.
 
 
 def log_transaction(user_id,
