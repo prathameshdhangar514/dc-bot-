@@ -1866,7 +1866,7 @@ async def daily(ctx):
         embed = discord.Embed(
             title="⚡ **DAILY ENERGY HARVESTED** ⚡",
             description=
-            f"```css\n[SPIRITUAL ENERGY CHANNELING COMPLETE]\n```\n💫 *The universe grants you its power...*",
+            "```css\n[SPIRITUAL ENERGY CHANNELING COMPLETE]\n```\n💫 *The universe grants you its power...*",
             color=0x8A2BE2 if streak >= 3 else 0x4169E1)
 
         embed.add_field(
@@ -1984,7 +1984,7 @@ async def forceconvert(ctx):
 @cooldown_check('nextconvert')
 async def nextconvert(ctx):
     """Show when the next monthly conversion will happen"""
-    now = datetime.now(timezone.utc)
+    now = datetime.datetime.now(timezone.utc)
 
     # Calculate next conversion date
     if now.day == 1 and now.hour == 0:
@@ -2112,7 +2112,7 @@ async def cloudbackup(ctx):
             embed.add_field(
                 name="📊 **Backup Statistics**",
                 value=
-                f"```yaml\nTables Backed Up: 5\nFile Size: {file_size:,} bytes\nTimestamp: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC\nLocation: {'GitHub + Local' if github_success else 'Local Only'}\n```",
+                f"```yaml\nTables Backed Up: 5\nFile Size: {file_size:,} bytes\nTimestamp: {datetime.datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC\nLocation: {'GitHub + Local' if github_success else 'Local Only'}\n```",
                 inline=False)
 
             embed.set_footer(
@@ -2204,7 +2204,7 @@ async def usename(ctx, member: discord.Member, *, new_nickname: str):
         update_user_data(user_id, balance=new_balance)
 
         # Set expiry (24 hours from now)
-        expires_at = (datetime.now(timezone.utc) +
+        expires_at = (datetime.datetime.now(timezone.utc) +
                       timedelta(hours=24)).isoformat()
 
         # Record the name change
@@ -2372,7 +2372,7 @@ async def sendsp(ctx, member: discord.Member, amount: int):
             icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
 
         # Use modern datetime
-        embed.timestamp = datetime.now(timezone.utc)
+        embed.timestamp = datetime.datetime.now(timezone.utc)
 
         # Send the embed
         result, error = await safe_send(ctx, embed=embed)
@@ -2590,7 +2590,7 @@ async def backupstatus(ctx):
             if backup_files:
                 latest_backup = backup_files[0]
                 latest_path = os.path.join("backups", latest_backup)
-                latest_time = datetime.fromtimestamp(
+                latest_time = datetime.datetime.fromtimestamp(
                     os.path.getmtime(latest_path))
                 latest_size = os.path.getsize(latest_path)
                 total_size = sum(
@@ -2622,7 +2622,7 @@ async def backupstatus(ctx):
         # Current database info
         if os.path.exists(DB_FILE):
             current_size = os.path.getsize(DB_FILE)
-            current_time = datetime.fromtimestamp(os.path.getmtime(DB_FILE))
+            current_time = datetime.datetime.fromtimestamp(os.path.getmtime(DB_FILE))
 
             embed.add_field(
                 name="🗄️ **Current Database**",
