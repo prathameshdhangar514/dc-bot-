@@ -2147,8 +2147,7 @@ async def cloudbackup(ctx):
                 inline=False)
 
             embed.set_footer(
-                text=
-                "💫 Your cosmic data is now safely preserved in the eternal vault",
+                text="💫 Your cosmic data is now safely preserved in the eternal vault",
                 icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
         else:
             embed = discord.Embed(
@@ -3000,11 +2999,10 @@ async def buy(ctx, item: str):
     if item not in SHOP_ITEMS:
         available_items = ", ".join(
             [i.replace('_', ' ').title() for i in SHOP_ITEMS.keys()])
-        embed = discord.Embed(
-            title="❌ **ARTIFACT NOT FOUND**",
-            description=
-            f"```diff\n- UNKNOWN ITEM REQUESTED\n```\n🔍 **Available Items:** {available_items}",
-            color=0xFF0000)
+        embed = discord.Embed(title="❌ **ARTIFACT NOT FOUND**",
+                              description=
+                              f"```diff\n- UNKNOWN ITEM REQUESTED\n```\n🔍 **Available Items:** {available_items}",
+                              color=0xFF0000)
         return await ctx.send(embed=embed)
 
     item_data = SHOP_ITEMS[item]
