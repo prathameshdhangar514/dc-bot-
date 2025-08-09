@@ -1,0 +1,85 @@
+@bot.command()
+@safe_command_wrapper
+@cooldown_check('lose')
+async def lose(ctx, member: discord.Member = None):
+    """Shows SP lost this month for the user or tagged member"""
+    user = member or ctx.author
+    user_id = str(user.id)
+
+    # Get current month stats
+    current_month = datetime.now(timezone.utc).strftime("%Y-%m")
+    monthly_stats = get_monthly_stats(user_id, current_month)
+
+    losses = monthly_stats.get("losses", 0)
+    wins = monthly_stats.get("wins", 0)
+    net_result = wins - losses
+
+    # Determine loss tier and color
+    if losses >= 100000:
+        loss_tier = "💀 **VOID TOUCHED**"
+        tier_color = 0x8B0000
+    elif losses >= 50000:
+        loss_tier = "🔥 **RECKLESS**"
+        tier_color = 0xFF4500
+    elif losses >= 25000:
+        loss_tier = "⚠️ **DANGEROUS**"
+        tier_color = 0xFF6347
+    elif losses >= 10000:
+        loss_tier = "😬 **RISKY**"
+        tier_color = 0xFFB347
+    elif losses > 0:
+        loss_tier = "🎯 **CAUTIOUS**"
+        tier_color = 0xFFD700
+    else:
+        loss_tier = "🛡️ **UNTOUCHED**"
+        tier_color = 0x32CD32
+
+    embed = discord.Embed(
+        title=f"💸 **{user.display_name.upper()}'S VOID TRIBUTE** 💸",
+        description=
+        f"```css\n[MONTHLY GAMBLING ANALYSIS]\n```\n{loss_tier} • *The darkness remembers every sacrifice...*",
+        color=tier_color)
+
+    embed.add_field(name="💀 **LOSSES TO THE VOID**",
+                    value=f"```diff\n- {losses:,} Spirit Points\n```",
+                    inline=True)
+
+    embed.add_field(name="🏆 **GAINS FROM FORTUNE**",
+                    value=f"```diff\n+ {wins:,} Spirit Points\n```",
+                    inline=True)
+
+    embed.add_field(
+        name="⚖️ **NET RESULT**",
+        value=
+        f"```{'diff' if net_result >= 0 else 'css'}\n{'+ ' if net_result >= 0 else ''}{net_result:,} Spirit Points\n```",
+        inline=False)
+
+    # Loss ratio calculation
+    total_gambled = wins + losses
+    if total_gambled > 0:
+        loss_percentage = (losses / total_gambled) * 100
+        embed.add_field(
+            name="📊 **GAMBLING STATISTICS**",
+            value=
+            f"```yaml\nTotal Gambled: {total_gambled:,} SP\nLoss Rate: {loss_percentage:.1f}%\nRisk Level: {'HIGH' if loss_percentage > 60 else 'MODERATE' if loss_percentage > 40 else 'LOW'}\n```",
+            inline=False)
+
+    # Motivational message based on performance
+    if net_result > 0:
+        message = "🌟 *Fortune favors your bold spirit!*"
+    elif net_result == 0:
+        message = "⚖️ *Perfect balance - the universe is neutral.*"
+    else:
+        message = "🌑 *The void grows stronger with your offerings...*"
+
+    embed.add_field(name="🔮 **COSMIC INSIGHT**", value=message, inline=False)
+
+    embed.set_thumbnail(url=user.avatar.url if user.avatar else None)
+    embed.set_footer(
+        text=
+        f"📅 {datetime.now(timezone.utc).strftime('%B %Y')} • Gamble responsibly",
+        icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
+
+    result, error = await safe_send(ctx, embed=embed)
+    if error:
+        logger.error(f"❌ Failed to send message: {error}")
