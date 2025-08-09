@@ -455,7 +455,6 @@ async def safe_add_reaction(message, emoji):
     """Safely add reactions with rate limiting"""
     return await safe_api_call(message.add_reaction, emoji)
 
-
 async def check_database_integrity():
     """Check if database is corrupted and attempt repair"""
     try:
@@ -467,15 +466,13 @@ async def check_database_integrity():
         logger.error(f"❌ Database corruption detected: {e}")
         return False
 
-
 async def init_database_async():
     """Initialize database with corruption check (async version)"""
     try:
         # Check if database exists and is intact
         if os.path.exists(DB_FILE):
             if not await check_database_integrity():
-                logger.warning(
-                    "🔄 Database corruption detected during initialization")
+                logger.warning("🔄 Database corruption detected during initialization")
 
                 # Try to restore from backup first
                 if not await restore_from_latest_backup():
@@ -511,13 +508,11 @@ async def init_database_async():
         logger.error(f"❌ Database initialization failed: {e}")
         return False
 
-
 async def repair_database():
     """Attempt to repair corrupted database"""
     try:
         # Backup corrupted database
-        timestamp = datetime.datetime.now(
-            timezone.utc).strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         corrupted_backup = f"{DB_FILE}.corrupted_{timestamp}"
         shutil.copy2(DB_FILE, corrupted_backup)
         logger.info(f"💾 Corrupted database backed up to: {corrupted_backup}")
@@ -547,7 +542,6 @@ async def repair_database():
         logger.error(f"❌ Database repair failed: {e}")
         return False
 
-
 async def restore_from_latest_backup():
     """Restore database from latest backup"""
     try:
@@ -562,14 +556,11 @@ async def restore_from_latest_backup():
             return False
 
         # Get latest backup
-        latest_backup = max(
-            backup_files,
-            key=lambda x: os.path.getmtime(os.path.join(backup_dir, x)))
+        latest_backup = max(backup_files, key=lambda x: os.path.getmtime(os.path.join(backup_dir, x)))
         backup_path = os.path.join(backup_dir, latest_backup)
 
         # Backup current corrupted file
-        timestamp = datetime.datetime.now(
-            timezone.utc).strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         shutil.copy2(DB_FILE, f"{DB_FILE}.corrupted_{timestamp}")
 
         # Restore from backup
@@ -581,7 +572,6 @@ async def restore_from_latest_backup():
     except Exception as e:
         logger.error(f"❌ Backup restore failed: {e}")
         return False
-
 
 async def safe_remove_roles(member, *roles):
     """Safely remove roles with rate limiting"""
@@ -859,7 +849,6 @@ async def _safe_update_user_data(user_id, **kwargs):
         logger.error(f"❌ Update error: {e}")
         return False
 
-
 async def safe_db_operation(operation_func, *args, **kwargs):
     """Safely execute database operations with error handling"""
     max_retries = 3
@@ -893,7 +882,6 @@ async def safe_db_operation(operation_func, *args, **kwargs):
     logger.error("❌ All database operation attempts failed")
     return None
 
-
 async def safe_update_user_data(user_id, **kwargs):
     """Thread-safe user data update with retry logic (async wrapper)"""
     max_retries = 3
@@ -917,7 +905,6 @@ async def safe_update_user_data(user_id, **kwargs):
 
     return False
 
-
 async def update_user_data(user_id: str, **kwargs):
     """Update user data asynchronously - FIXED VERSION"""
     try:
@@ -925,13 +912,12 @@ async def update_user_data(user_id: str, **kwargs):
         cursor = conn.cursor()
 
         # Get current data
-        cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id, ))
+        cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
         user_data = cursor.fetchone()
 
         if not user_data:
             # Create new user
-            cursor.execute(
-                """
+            cursor.execute("""
                 INSERT INTO users (user_id, balance, sp, daily_streak, last_daily)
                 VALUES (?, ?, ?, ?, ?)
             """, (user_id, kwargs.get('balance', 0), kwargs.get('sp', 100),
@@ -960,8 +946,7 @@ async def update_user_data(user_id: str, **kwargs):
 
         # Check if database is corrupted
         if "malformed" in str(e).lower() or "corrupt" in str(e).lower():
-            logger.warning(
-                "🔄 Database corruption detected, attempting repair...")
+            logger.warning("🔄 Database corruption detected, attempting repair...")
 
             # Attempt repair
             if await repair_database():
@@ -981,7 +966,6 @@ async def update_user_data(user_id: str, **kwargs):
     except Exception as e:
         logger.error(f"❌ Unexpected error in update_user_data: {e}")
         return False
-
 
 def get_monthly_stats(user_id, month=None):
     """Get monthly gambling stats for user"""
@@ -1213,7 +1197,6 @@ def create_backup_with_cloud_storage():
         print(f"Backup creation error: {e}")
         return None
 
-
 async def restore_from_cloud():
     """Restore database from the most recent backup (local or GitHub)"""
     try:
@@ -1222,8 +1205,7 @@ async def restore_from_cloud():
 
         # Try to download the latest from GitHub first
         if github_backup:
-            success, result = github_backup.download_backup_from_github(
-            )  # Ensure await is used properly# Ensure await is used properly
+            success, result = github_backup.download_backup_from_github()  # Ensure await is used properly# Ensure await is used properly
             if success:
                 latest_backup = result
                 restored_from_github = True
@@ -1233,9 +1215,7 @@ async def restore_from_cloud():
         # Fallback to local backups if GitHub fails
         if not restored_from_github:
             if not os.path.exists("backups"):
-                logger.warning(
-                    "⚠️ No backup found to restore from. Creating a new database."
-                )
+                logger.warning("⚠️ No backup found to restore from. Creating a new database.")
                 await init_database()  # Use await here
                 return True
 
@@ -1244,15 +1224,11 @@ async def restore_from_cloud():
                 if f.startswith("backup_") and f.endswith(".db")
             ]
             if not backup_files:
-                logger.warning(
-                    "⚠️ No backup found to restore from. Creating a new database."
-                )
+                logger.warning("⚠️ No backup found to restore from. Creating a new database.")
                 await init_database()  # Use await here
                 return True
 
-            backup_files.sort(
-                key=lambda x: os.path.getmtime(os.path.join("backups", x)),
-                reverse=True)
+            backup_files.sort(key=lambda x: os.path.getmtime(os.path.join("backups", x)), reverse=True)
             latest_backup = os.path.join("backups", backup_files[0])
 
         # Only proceed if we have a backup to restore
@@ -1266,15 +1242,13 @@ async def restore_from_cloud():
             logger.info(f"✅ Database restored from: {latest_backup}")
             return True
         else:
-            logger.warning(
-                "⚠️ No backup found to restore from. Creating a new database.")
+            logger.warning("⚠️ No backup found to restore from. Creating a new database.")
             await init_database()  # Use await here
             return True
 
     except Exception as e:
         logger.error(f"❌ Database restore failed: {e}")
         return False
-
 
 def log_transaction(user_id,
                     transaction_type,
@@ -1458,8 +1432,7 @@ async def ensure_database_exists():
     else:
         # Before touching DB, attempt to restore latest backup
         if github_backup:
-            logger.info(
-                "🔄 Attempting to restore latest cloud backup before startup")
+            logger.info("🔄 Attempting to restore latest cloud backup before startup")
             await restore_from_cloud()  # Use await here
         else:
             logger.info("📂 Using existing local database")
@@ -1758,7 +1731,6 @@ async def api_health_monitor():
 
     except Exception as e:
         logger.error(f"❌ API health monitor error: {e}")
-
 
 async def startup_sequence():
     """Safe startup sequence with health checks"""
@@ -2352,8 +2324,7 @@ async def nextconvert(ctx):
         inline=False)
 
     embed.set_footer(
-        text=
-        "💫 Monthly conversion happens automatically on the 1st of each month",
+        text="💫 Monthly conversion happens automatically on the 1st of each month",
         icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
 
     result, error = await safe_send(ctx, embed=embed)
@@ -2515,6 +2486,7 @@ async def usename(ctx, member: discord.Member, *, new_nickname: str):
         new_balance = user_data["balance"] - 10000
         await update_user_data(user_id, balance=new_balance)
 
+
         # Set expiry (24 hours from now)
         expires_at = (datetime.datetime.now(timezone.utc) +
                       timedelta(hours=24)).isoformat()
@@ -2638,8 +2610,7 @@ async def sendsp(ctx, member: discord.Member, amount: int):
         if not success:
             embed = discord.Embed(
                 title="❌ **DATABASE ERROR** ❌",
-                description=
-                "```diff\n- Failed to update user data\n- Please try again later\n```",
+                description="```diff\n- Failed to update user data\n- Please try again later\n```",
                 color=0xFF0000)
             return await ctx.send(embed=embed)
 
@@ -2659,8 +2630,7 @@ async def sendsp(ctx, member: discord.Member, amount: int):
 
         embed.add_field(
             name="👑 **SUPREME OWNER**",
-            value=
-            f"```ansi\n\u001b[0;35m{ctx.author.display_name}\u001b[0m\n```",
+            value=f"```ansi\n\u001b[0;35m{ctx.author.display_name}\u001b[0m\n```",
             inline=True)
 
         embed.add_field(
@@ -2693,36 +2663,25 @@ async def sendsp(ctx, member: discord.Member, amount: int):
             color=0xFF0000)
         await ctx.send(embed=error_embed)
 
+
 @bot.command()
 @commands.has_permissions(administrator=True)
-async def restorebackup(ctx, filename: str = None):
-    """Restore database from a specific backup or cloud backup (GitHub or local)"""
-    if filename:
-        embed = discord.Embed(
-            title="⚠️ **Restore Confirmation**",
-            description=f"```diff\n+ RESTORING BACKUP: {filename}\n```\n"
-            "⚠️ *This will replace your current database with the specified backup.*\n"
-            "🔥 ***ALL CURRENT DATA WILL BE LOST!***\n\n"
-            "React with ✅ to confirm or ❌ to cancel.",
-            color=0xFFB800)
+async def restorebackup(ctx):
+    """Restore database from cloud backup (GitHub or local)"""
+    embed = discord.Embed(
+        title="⚠️ **Restore Confirmation**",
+        description=
+        ("```diff\n+ COSMIC DATABASE RESTORATION RITUAL +\n```\n"
+         "⚠️ *This will replace your current database with the latest backup.*\n"
+         "🔥 ***ALL CURRENT DATA WILL BE LOST!***\n\n"
+         "React with ✅ to confirm or ❌ to cancel."),
+        color=0xFFB800)
 
-        embed.add_field(
-            name="🛡️ **Safety Measures**",
-            value="```yaml\nCurrent DB: Will be backed up first\nRestore Source: Specific backup file\nRollback: Possible via pre-restore backup\n```",
-            inline=False)
-    else:
-        embed = discord.Embed(
-            title="⚠️ **Restore Confirmation**",
-            description=("```diff\n+ COSMIC DATABASE RESTORATION RITUAL +\n```\n"
-                        "⚠️ *This will replace your current database with the latest backup.*\n"
-                        "🔥 ***ALL CURRENT DATA WILL BE LOST!***\n\n"
-                        "React with ✅ to confirm or ❌ to cancel."),
-            color=0xFFB800)
-
-        embed.add_field(
-            name="🛡️ **Safety Measures**",
-            value="```yaml\nCurrent DB: Will be backed up first\nRestore Source: Latest backup (GitHub/Local)\nRollback: Possible via pre-restore backup\n```",
-            inline=False)
+    embed.add_field(
+        name="🛡️ **Safety Measures**",
+        value=
+        "```yaml\nCurrent DB: Will be backed up first\nRestore Source: Latest backup (GitHub/Local)\nRollback: Possible via pre-restore backup\n```",
+        inline=False)
 
     message = await ctx.send(embed=embed)
     await message.add_reaction("✅")
@@ -2739,56 +2698,48 @@ async def restorebackup(ctx, filename: str = None):
 
         if str(reaction.emoji) == "✅":
             embed = discord.Embed(
-                title="🔄 **Restoring Backup...**",
-                description="```css\n[BACKUP RESTORATION IN PROGRESS]\n```\n⚡ *Restoring your specified backup...*",
+                title="🔄 **Restoring from Cloud...**",
+                description=
+                "```css\n[COSMIC DATA RESTORATION IN PROGRESS]\n```\n⚡ *Downloading and restoring backup from cloud storage...*",
                 color=0xFFAA00)
 
             await message.edit(embed=embed)
 
-            success = False
-            if filename:  # If filename is provided, restore from that specific file
-                backup_path = os.path.join("backups", filename)
-                if os.path.isfile(backup_path):
-                    shutil.copy2(backup_path, DB_FILE)  # Restore specific backup
-                    success = True
-                else:
-                    embed = discord.Embed(
-                        title="❌ **Restore Failed**",
-                        description=f"```diff\n- Backup file '{filename}' not found.\n```",
-                        color=0xFF0000)
-                    await message.edit(embed=embed)
-                    return
-            else:  # Restore from the cloud
-                success = await restore_from_cloud()
+            success = restore_from_cloud()
 
             if success:
                 embed = discord.Embed(
                     title="✅ **Restore Complete**",
-                    description=("```fix\n◆ DATABASE RESTORATION SUCCESSFUL ◆\n```\n"
-                                 "💎 *Database has been restored from backup!*\n"
-                                 "⚡ ***Bot restart recommended.***"),
+                    description=
+                    ("```fix\n◆ COSMIC DATABASE RESTORATION SUCCESSFUL ◆\n```\n"
+                     "💎 *Database has been restored from backup!*\n"
+                     "⚡ ***Bot restart recommended.***"),
                     color=0x00FF00)
 
                 embed.add_field(
                     name="🔄 **Next Steps**",
-                    value="```yaml\n1. Bot restart recommended\n2. Verify data integrity\n3. Check all functions\n4. Old DB backed up as pre-restore\n```",
+                    value=
+                    "```yaml\n1. Bot restart recommended\n2. Verify data integrity\n3. Check all functions\n4. Old DB backed up as pre-restore\n```",
                     inline=False)
             else:
                 embed = discord.Embed(
                     title="❌ **Restore Failed**",
-                    description="```diff\n- RESTORATION FAILED\n```\n💀 *Failed to restore from backup. Check logs for details.*",
+                    description=
+                    "```diff\n- RESTORATION RITUAL FAILED\n```\n💀 *Failed to restore from backup. Check logs for details.*",
                     color=0xFF0000)
 
         else:
             embed = discord.Embed(
                 title="❌ **Restore Cancelled**",
-                description="```css\n[RESTORATION CANCELLED]\n```\n🛡️ *Your current database remains unchanged.*",
+                description=
+                "```css\n[RESTORATION RITUAL CANCELLED]\n```\n🛡️ *Your current database remains unchanged.*",
                 color=0x808080)
 
     except asyncio.TimeoutError:
         embed = discord.Embed(
             title="⏰ **Timeout**",
-            description="```css\n[RESTORATION TIMEOUT]\n```\n🕐 *No response received. Current database remains unchanged.*",
+            description=
+            "```css\n[RESTORATION RITUAL TIMEOUT]\n```\n🕐 *No response received. Current database remains unchanged.*",
             color=0x808080)
 
     await message.edit(embed=embed)
@@ -2846,9 +2797,8 @@ async def apistatus(ctx):
                             value=f"```\n{command_list}\n```",
                             inline=True)
 
-        embed.set_footer(
-            text="🔄 Updates every 5 minutes • API monitoring active",
-            icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
+        embed.set_footer(text="🔄 Updates every 5 minutes • API monitoring active",
+                         icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
 
         result, error = await safe_send(ctx, embed=embed)
         if error:
@@ -3262,13 +3212,11 @@ async def shop(ctx):
         "```css\n[LEGENDARY ARTIFACTS AWAIT]\n```\n✨ *Only the worthy may claim these treasures of power...*",
         color=0xFF6B35)
 
-    for index, (item, details) in enumerate(SHOP_ITEMS.items(),
-                                            start=1):  # Changed here
+    for item, details in SHOP_ITEMS.items():
         item_name = item.replace('_', ' ').title()
 
         embed.add_field(
-            name=
-            f"{index}. {details['desc'].split()[0]} **{item_name.upper()}**",  # Changed here
+            name=f"{details['desc'].split()[0]} **{item_name.upper()}**",
             value=
             f"```yaml\nPrice: {details['price']:,} Spirit Stones\n```\n*{details['desc'][2:]}*",
             inline=True)
@@ -3276,7 +3224,7 @@ async def shop(ctx):
     embed.add_field(
         name="💳 **PURCHASE INSTRUCTIONS**",
         value=
-        "```fix\n!buy <item_number>\n```\n🛒 *Use the command above to claim your artifact*",
+        "```fix\n!buy <item_name>\n```\n🛒 *Use the command above to claim your artifact*",
         inline=False)
 
     embed.set_footer(text="⚡ Spiritual artifacts enhance your cosmic journey",
@@ -3290,24 +3238,21 @@ async def shop(ctx):
 @bot.command()
 @safe_command_wrapper
 @cooldown_check('buy')
-async def buy(ctx, item_number: int):
+async def buy(ctx, item: str):
     user_id = str(ctx.author.id)
     user_data = get_user_data(user_id)
 
-    item_list = list(SHOP_ITEMS.keys())  # Extract item list again
-    if item_number < 1 or item_number > len(
-            item_list):  # Check if the number is valid
+    item = item.lower()
+    if item not in SHOP_ITEMS:
         available_items = ", ".join(
-            [str(i + 1) for i in range(len(item_list))])
+            [i.replace('_', ' ').title() for i in SHOP_ITEMS.keys()])
         embed = discord.Embed(
             title="❌ **ARTIFACT NOT FOUND**",
             description=
-            f"```diff\n- UNKNOWN ITEM REQUESTED\n```\n🔍 **Available Item Numbers:** {available_items}",
+            f"```diff\n- UNKNOWN ITEM REQUESTED\n```\n🔍 **Available Items:** {available_items}",
             color=0xFF0000)
         return await ctx.send(embed=embed)
 
-    item = item_list[item_number -
-                     1]  # The item corresponds to the user's input
     item_data = SHOP_ITEMS[item]
     balance = user_data["balance"]
 
@@ -3339,7 +3284,9 @@ async def buy(ctx, item_number: int):
             await ctx.author.add_roles(role)
         effect = "👑 **ELITE STATUS ACHIEVED** - *You have joined the HMW elite circle*"
         effect_color = 0xFFD700
+
     elif item == "name_change_card":
+        # This gives them the card, they use it with a separate command
         effect = "🃏 **NAME CHANGE CARD ACQUIRED** - *Use !usename @target 'new nickname' to activate*"
         effect_color = 0xFF1493
     else:
@@ -3349,6 +3296,7 @@ async def buy(ctx, item_number: int):
     # Update balance
     new_balance = balance - item_data["price"]
     await update_user_data(user_id, balance=new_balance)
+
 
     # Log transaction
     log_transaction(user_id, "shop_purchase", -item_data["price"], balance,
@@ -3416,15 +3364,13 @@ async def givess(ctx, member: discord.Member, amount: int):
         if not success:
             embed = discord.Embed(
                 title="❌ **DATABASE ERROR** ❌",
-                description=
-                "```diff\n- Failed to update user data\n- Please try again later\n```",
+                description="```diff\n- Failed to update user data\n- Please try again later\n```",
                 color=0xFF0000)
             return await ctx.send(embed=embed)
 
         # Log transaction
         log_transaction(receiver_id, "admin_grant", amount, old_balance,
-                        new_balance,
-                        f"Admin grant by {ctx.author.display_name}")
+                        new_balance, f"Admin grant by {ctx.author.display_name}")
 
         embed = discord.Embed(
             title="✨ **DIVINE BLESSING GRANTED** ✨",
@@ -3434,8 +3380,7 @@ async def givess(ctx, member: discord.Member, amount: int):
 
         embed.add_field(
             name="👑 **ADMINISTRATOR**",
-            value=
-            f"```ansi\n\u001b[0;35m{ctx.author.display_name}\u001b[0m\n```",
+            value=f"```ansi\n\u001b[0;35m{ctx.author.display_name}\u001b[0m\n```",
             inline=True)
 
         embed.add_field(
@@ -3467,8 +3412,7 @@ async def givess(ctx, member: discord.Member, amount: int):
 
         error_embed = discord.Embed(
             title="❌ **SYSTEM ERROR** ❌",
-            description=
-            "```diff\n- Database operation failed\n- Please check logs\n```",
+            description="```diff\n- Database operation failed\n- Please check logs\n```",
             color=0xFF0000)
         await ctx.send(embed=error_embed)
 
@@ -3507,6 +3451,7 @@ async def takess(ctx, member: discord.Member, amount: int):
 
     new_balance = current_balance - amount
     await update_user_data(target_id, balance=new_balance)
+
 
     # Log transaction
     log_transaction(target_id, "admin_remove", -amount, current_balance,
@@ -3751,8 +3696,7 @@ async def emergency_repair(ctx):
     """Emergency database repair command"""
     embed = discord.Embed(
         title="🚨 **EMERGENCY DATABASE REPAIR** 🚨",
-        description=
-        "```css\n[INITIATING EMERGENCY PROTOCOLS]\n```\n⚠️ *Attempting to repair database corruption...*",
+        description="```css\n[INITIATING EMERGENCY PROTOCOLS]\n```\n⚠️ *Attempting to repair database corruption...*",
         color=0xFF6B00)
 
     message = await ctx.send(embed=embed)

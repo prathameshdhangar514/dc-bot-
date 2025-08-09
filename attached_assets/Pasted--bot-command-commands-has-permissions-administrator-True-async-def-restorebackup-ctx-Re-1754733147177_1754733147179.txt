@@ -1,0 +1,79 @@
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def restorebackup(ctx):
+    """Restore database from cloud backup (GitHub or local)"""
+    embed = discord.Embed(
+        title="⚠️ **Restore Confirmation**",
+        description=
+        ("```diff\n+ COSMIC DATABASE RESTORATION RITUAL +\n```\n"
+         "⚠️ *This will replace your current database with the latest backup.*\n"
+         "🔥 ***ALL CURRENT DATA WILL BE LOST!***\n\n"
+         "React with ✅ to confirm or ❌ to cancel."),
+        color=0xFFB800)
+
+    embed.add_field(
+        name="🛡️ **Safety Measures**",
+        value=
+        "```yaml\nCurrent DB: Will be backed up first\nRestore Source: Latest backup (GitHub/Local)\nRollback: Possible via pre-restore backup\n```",
+        inline=False)
+
+    message = await ctx.send(embed=embed)
+    await message.add_reaction("✅")
+    await message.add_reaction("❌")
+
+    def check(reaction, user):
+        return (user == ctx.author and str(reaction.emoji) in ["✅", "❌"]
+                and reaction.message.id == message.id)
+
+    try:
+        reaction, user = await bot.wait_for('reaction_add',
+                                            timeout=30.0,
+                                            check=check)
+
+        if str(reaction.emoji) == "✅":
+            embed = discord.Embed(
+                title="🔄 **Restoring from Cloud...**",
+                description=
+                "```css\n[COSMIC DATA RESTORATION IN PROGRESS]\n```\n⚡ *Downloading and restoring backup from cloud storage...*",
+                color=0xFFAA00)
+
+            await message.edit(embed=embed)
+
+            success = restore_from_cloud()
+
+            if success:
+                embed = discord.Embed(
+                    title="✅ **Restore Complete**",
+                    description=
+                    ("```fix\n◆ COSMIC DATABASE RESTORATION SUCCESSFUL ◆\n```\n"
+                     "💎 *Database has been restored from backup!*\n"
+                     "⚡ ***Bot restart recommended.***"),
+                    color=0x00FF00)
+
+                embed.add_field(
+                    name="🔄 **Next Steps**",
+                    value=
+                    "```yaml\n1. Bot restart recommended\n2. Verify data integrity\n3. Check all functions\n4. Old DB backed up as pre-restore\n```",
+                    inline=False)
+            else:
+                embed = discord.Embed(
+                    title="❌ **Restore Failed**",
+                    description=
+                    "```diff\n- RESTORATION RITUAL FAILED\n```\n💀 *Failed to restore from backup. Check logs for details.*",
+                    color=0xFF0000)
+
+        else:
+            embed = discord.Embed(
+                title="❌ **Restore Cancelled**",
+                description=
+                "```css\n[RESTORATION RITUAL CANCELLED]\n```\n🛡️ *Your current database remains unchanged.*",
+                color=0x808080)
+
+    except asyncio.TimeoutError:
+        embed = discord.Embed(
+            title="⏰ **Timeout**",
+            description=
+            "```css\n[RESTORATION RITUAL TIMEOUT]\n```\n🕐 *No response received. Current database remains unchanged.*",
+            color=0x808080)
+
+    await message.edit(embed=embed)

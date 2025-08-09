@@ -1,0 +1,53 @@
+async def restore_from_cloud():
+    """Restore database from the most recent backup (local or GitHub)"""
+    try:
+        latest_backup = None
+        restored_from_github = False
+
+        # Try to download the latest from GitHub first
+        if github_backup:
+            # Ensure the function returns awaitable
+            success, result = await github_backup.download_backup_from_github()  # Ensure await is used properly
+            if success:
+                latest_backup = result
+                restored_from_github = True
+            else:
+                logger.warning(f"GitHub download failed: {result}")
+
+        # Fallback to local backups if GitHub fails
+        if not restored_from_github:
+            if not os.path.exists("backups"):
+                logger.warning("⚠️ No backup found to restore from. Creating a new database.")
+                await init_database()  # Use await here
+                return True
+
+            backup_files = [
+                f for f in os.listdir("backups")
+                if f.startswith("backup_") and f.endswith(".db")
+            ]
+            if not backup_files:
+                logger.warning("⚠️ No backup found to restore from. Creating a new database.")
+                await init_database()  # Use await here
+                return True
+
+            backup_files.sort(key=lambda x: os.path.getmtime(os.path.join("backups", x)), reverse=True)
+            latest_backup = os.path.join("backups", backup_files[0])
+
+        # Only proceed if we have a backup to restore
+        if latest_backup:
+            # Backup current database before restore
+            current_backup = f"pre_restore_backup_{datetime.datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.db"
+            shutil.copy2(DB_FILE, os.path.join("backups", current_backup))
+
+            # Restore from backup
+            shutil.copy2(latest_backup, DB_FILE)
+            logger.info(f"✅ Database restored from: {latest_backup}")
+            return True
+        else:
+            logger.warning("⚠️ No backup found to restore from. Creating a new database.")
+            await init_database()  # Use await here
+            return True
+
+    except Exception as e:
+        logger.error(f"❌ Database restore failed: {e}")
+        return False

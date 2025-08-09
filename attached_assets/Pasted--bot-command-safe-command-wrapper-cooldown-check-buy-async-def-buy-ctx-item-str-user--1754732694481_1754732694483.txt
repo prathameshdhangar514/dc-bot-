@@ -1,0 +1,94 @@
+@bot.command()
+@safe_command_wrapper
+@cooldown_check('buy')
+async def buy(ctx, item: str):
+    user_id = str(ctx.author.id)
+    user_data = get_user_data(user_id)
+
+    item = item.lower()
+    if item not in SHOP_ITEMS:
+        available_items = ", ".join(
+            [i.replace('_', ' ').title() for i in SHOP_ITEMS.keys()])
+        embed = discord.Embed(
+            title="❌ **ARTIFACT NOT FOUND**",
+            description=
+            f"```diff\n- UNKNOWN ITEM REQUESTED\n```\n🔍 **Available Items:** {available_items}",
+            color=0xFF0000)
+        return await ctx.send(embed=embed)
+
+    item_data = SHOP_ITEMS[item]
+    balance = user_data["balance"]
+
+    if balance < item_data["price"]:
+        shortage = item_data["price"] - balance
+        embed = discord.Embed(
+            title="💸 **INSUFFICIENT SPIRIT STONES**",
+            description=
+            f"```diff\n- TREASURY INADEQUATE\n```\n💰 **Required:** {item_data['price']:,} SS\n💎 **You Have:** {balance:,} SS\n📉 **Shortage:** {shortage:,} SS\n\n⚡ *Gather more power before returning...*",
+            color=0xFF6347)
+        return await ctx.send(embed=embed)
+
+    if item == "nickname_lock":
+        add_nickname_lock(user_id)
+        effect = "🔒 **IDENTITY SEALED** - *Your name is now protected from all changes*"
+        effect_color = 0x4169E1
+    elif item == "temp_admin":
+        expiry = datetime.datetime.now(
+            timezone.utc) + datetime.timedelta(hours=1)
+        add_temp_admin(user_id, expiry.isoformat(), str(ctx.guild.id))
+        role = ctx.guild.get_role(ROLE_ID_TEMP_ADMIN)
+        if role:
+            await ctx.author.add_roles(role)
+        effect = "⚡ **TEMPORAL AUTHORITY GRANTED** - *Divine power flows through you for 1 hour*"
+        effect_color = 0xFF1493
+    elif item == "hmw_role":
+        role = ctx.guild.get_role(ROLE_ID_HMW)
+        if role:
+            await ctx.author.add_roles(role)
+        effect = "👑 **ELITE STATUS ACHIEVED** - *You have joined the HMW elite circle*"
+        effect_color = 0xFFD700
+
+    elif item == "name_change_card":
+        # This gives them the card, they use it with a separate command
+        effect = "🃏 **NAME CHANGE CARD ACQUIRED** - *Use !usename @target 'new nickname' to activate*"
+        effect_color = 0xFF1493
+    else:
+        effect = "✨ **ARTIFACT BONDED** - *The power is now yours to wield*"
+        effect_color = 0x9932CC
+
+    # Update balance
+    new_balance = balance - item_data["price"]
+    await update_user_data(user_id, balance=new_balance)
+
+
+    # Log transaction
+    log_transaction(user_id, "shop_purchase", -item_data["price"], balance,
+                    new_balance, f"Purchased {item}")
+
+    embed = discord.Embed(
+        title="✅ **TRANSACTION COMPLETED** ✅",
+        description=
+        f"```fix\n◆ ARTIFACT ACQUISITION SUCCESSFUL ◆\n```\n{effect}",
+        color=effect_color)
+
+    embed.add_field(name="🎁 **ARTIFACT CLAIMED**",
+                    value=f"```css\n{item.replace('_', ' ').title()}\n```",
+                    inline=True)
+
+    embed.add_field(
+        name="💰 **COST PAID**",
+        value=f"```diff\n- {item_data['price']:,} Spirit Stones\n```",
+        inline=True)
+
+    embed.add_field(name="💎 **REMAINING BALANCE**",
+                    value=f"```yaml\n{new_balance:,} SS\n```",
+                    inline=True)
+
+    embed.set_thumbnail(
+        url=ctx.author.avatar.url if ctx.author.avatar else None)
+    embed.set_footer(text="🌟 Power has been transferred • Use it wisely",
+                     icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
+
+    result, error = await safe_send(ctx, embed=embed)
+    if error:
+        logger.error(f"❌ Failed to send message: {error}")
