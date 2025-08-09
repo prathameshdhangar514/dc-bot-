@@ -1502,6 +1502,12 @@ async def main():
     """Main async function with proper startup sequence and error recovery"""
     logger.info("🚀 Starting Discord Bot...")
 
+    # Check if TOKEN is valid before proceeding
+    if not TOKEN:
+        logger.critical("❌ DISCORD_BOT_TOKEN not set in environment variables")
+        logger.critical("Please set your Discord bot token in the environment variables")
+        return
+
     max_connection_retries = 5
     retry_delay = 10  # seconds
 
@@ -1559,8 +1565,8 @@ async def main():
         if not bot.is_closed():
             logger.info("🛑 Closing bot connection...")
             await bot.close()
-    except:
-        pass
+    except Exception as e:
+        logger.error(f"❌ Error during cleanup: {e}")
 
     logger.info("🛑 Bot shutdown complete")
 
