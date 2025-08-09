@@ -30,12 +30,6 @@ DB_LOCK = threading.Lock()
 DB_POOL = ThreadPoolExecutor(max_workers=3)
 
 
-@contextlib.contextmanager
-def get_db_connection():
-    with db_pool.get_connection() as conn:
-        yield conn
-
-
 class DatabasePool:
 
     def __init__(self, db_file, max_connections=5):
@@ -77,6 +71,11 @@ DB_FILE = "bot_database.db"
 
 # Initialize database pool
 db_pool = DatabasePool(DB_FILE)
+
+@contextlib.contextmanager
+def get_db_connection():
+    with db_pool.get_connection() as conn:
+        yield conn
 
 # Set up logging
 logging.basicConfig(
@@ -1523,6 +1522,7 @@ async def api_health_monitor():
 
 async def main():
     """Main async function with proper startup sequence and error recovery"""
+    global bot
     logger.info("🚀 Starting Discord Bot...")
 
     # Check if TOKEN is valid before proceeding
@@ -1569,8 +1569,7 @@ async def main():
             if attempt < max_connection_retries - 1:
                 logger.info(f"⏳ Retrying in {retry_delay} seconds...")
                 await asyncio.sleep(retry_delay)
-                retry_delay = min(retry_delay * 2,
-                                  300)  # Exponential backoff with max delay
+                retry_delay = min(retry_delay * 2, 300)  # Exponential backoff with max delay
             else:
                 logger.error("❌ Max retries exceeded")
 
@@ -1583,14 +1582,13 @@ async def main():
             if attempt < max_connection_retries - 1:
                 logger.info(f"⏳ Retrying in {retry_delay} seconds...")
                 await asyncio.sleep(retry_delay)
-                retry_delay = min(retry_delay * 2,
-                                  300)  # Exponential backoff with max delay
+                retry_delay = min(retry_delay * 2, 300)  # Exponential backoff with max delay
             else:
                 logger.error("❌ Max retries exceeded")
 
     # Cleanup
     try:
-        if not bot.is_closed():
+        if bot and not bot.is_closed():
             logger.info("🛑 Closing bot connection...")
             await bot.close()
     except Exception as e:
@@ -1654,8 +1652,7 @@ def enhanced_health():
 
 # ==== Discord Bot Setup ====
 intents = discord.Intents.all()
-bot = commands.Bot(command_prefix="!", intents=intents,
-                   help_command=None)  # Overwrite the None placeholder
+bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 last_gamble_times = {}
 
 
