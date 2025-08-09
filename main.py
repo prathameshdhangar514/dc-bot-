@@ -1,5 +1,5 @@
 import os
-import sqlite3
+import aiosqlite
 import random
 import asyncio
 import datetime
@@ -31,40 +31,130 @@ DB_LOCK = threading.Lock()
 DB_POOL = ThreadPoolExecutor(max_workers=3)
 
 
-class DatabasePool:
-
+class AsyncDatabasePool:
+    
     def __init__(self, db_file, max_connections=5):
         self.db_file = db_file
         self.max_connections = max_connections
-        self._pool = Queue(maxsize=max_connections)
-        self._lock = threading.Lock()
+        self._pool = asyncio.Queue(maxsize=max_connections)
+        self._lock = asyncio.Lock()
         self._initialized = False
 
-    def _initialize_pool(self):
+    async def _initialize_pool(self):
         if not self._initialized:
-            with self._lock:
+            async with self._lock:
                 if not self._initialized:
                     for _ in range(self.max_connections):
-                        conn = sqlite3.connect(self.db_file,
-                                               timeout=30,
-                                               check_same_thread=False)
-                        conn.execute("PRAGMA journal_mode=WAL")
-                        conn.execute("PRAGMA foreign_keys=ON")
-                        self._pool.put(conn)
+                        conn = await aiosqlite.connect(self.db_file, timeout=30)
+                        await conn.execute("PRAGMA journal_mode=WAL")
+
+class BotConfig:
+    """Centralized configuration management"""
+    
+    def __init__(self):
+        # Load environment variables
+        load_dotenv()
+        
+        # Bot settings
+        self.TOKEN = os.getenv("DISCORD_BOT_TOKEN")
+        self.GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+        self.GITHUB_BACKUP_REPO = os.getenv("GITHUB_BACKUP_REPO")
+        
+        # Database settings
+        self.DB_FILE = "bot_database.db"
+        self.DB_MAX_CONNECTIONS = int(os.getenv("DB_MAX_CONNECTIONS", "5"))
+        
+        # Rate limiting
+        self.DISCORD_API_LIMIT = int(os.getenv("DISCORD_API_LIMIT", "45"))
+        self.API_WINDOW = int(os.getenv("API_WINDOW", "60"))
+        
+        # Role IDs
+        self.ROLE_ID_TEMP_ADMIN = int(os.getenv("ROLE_ID_TEMP_ADMIN", "1393927331101544539"))
+        self.ROLE_ID_HMW = int(os.getenv("ROLE_ID_HMW", "1393927051685400790"))
+        self.ROLE_ID_ADMIN = int(os.getenv("ROLE_ID_ADMIN", "1397799884790169771"))
+        self.ROLE_ID_BOOSTER = int(os.getenv("ROLE_ID_BOOSTER", "1393289422241271940"))
+        self.ROLE_ID_OWNER = int(os.getenv("ROLE_ID_OWNER", "1393074903716073582"))
+        
+        # Gambling limits
+        self.MAX_COINFLIP_BET = int(os.getenv("MAX_COINFLIP_BET", "20000"))
+        self.GAMBLING_COOLDOWN = int(os.getenv("GAMBLING_COOLDOWN", "60"))
+        
+        # Backup settings
+        self.AUTO_BACKUP_HOURS = int(os.getenv("AUTO_BACKUP_HOURS", "6"))
+        
+    def validate(self):
+        """Validate configuration"""
+        if not self.TOKEN:
+            raise ValueError("DISCORD_BOT_TOKEN is required")
+        
+        return True
+
+# Initialize global config
+config = BotConfig()
+config.validate()
+
+                        await conn.execute("PRAGMA foreign_keys=ON")
+                        await conn.commit()
+                        await self._pool.put(conn)
                     self._initialized = True
 
-    @contextlib.contextmanager
-    def get_connection(self):
-        self._initialize_pool()
-        conn = self._pool.get(timeout=10)
+class BotMetrics:
+    """Collect and track bot metrics"""
+    
+    def __init__(self):
+        self.command_usage = defaultdict(int)
+        self.error_counts = defaultdict(int)
+        self.api_calls = defaultdict(int)
+        self.user_activity = defaultdict(int)
+        self.start_time = time.time()
+        
+    def increment_command(self, command_name):
+        """Track command usage"""
+        self.command_usage[command_name] += 1
+        
+    def increment_error(self, error_type):
+        """Track error occurrences"""
+        self.error_counts[error_type] += 1
+        
+    def increment_api_call(self, endpoint="discord"):
+        """Track API calls"""
+        self.api_calls[endpoint] += 1
+        
+    def track_user_activity(self, user_id):
+        """Track user activity"""
+        self.user_activity[str(user_id)] += 1
+        
+    def get_uptime(self):
+        """Get bot uptime in seconds"""
+        return time.time() - self.start_time
+        
+    def get_stats(self):
+        """Get comprehensive stats"""
+        return {
+            'uptime_seconds': self.get_uptime(),
+            'total_commands': sum(self.command_usage.values()),
+            'total_errors': sum(self.error_counts.values()),
+            'total_api_calls': sum(self.api_calls.values()),
+            'active_users': len(self.user_activity),
+            'top_commands': dict(sorted(self.command_usage.items(), key=lambda x: x[1], reverse=True)[:10])
+        }
+
+# Initialize global metrics
+bot_metrics = BotMetrics()
+
+
+    @contextlib.asynccontextmanager
+    async def get_connection(self):
+        await self._initialize_pool()
+        conn = await self._pool.get()
         try:
             yield conn
-        except sqlite3.Error as e:
+        except aiosqlite.Error as e:
             logger.error(f"❌ Database error: {e}")
-            conn.rollback()
+            await conn.rollback()
             raise
         finally:
-            self._pool.put(conn)
+            await self._pool.put(conn)
 
 
 # Define constants first
@@ -646,25 +736,21 @@ def init_database():
 
 
 # ==== Database Helper Functions ====
-def get_user_data(user_id):
-    """Enhanced get user data with proper error handling"""
+async def get_user_data(user_id):
+    """Enhanced async get user data with proper error handling"""
     try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('SELECT * FROM users WHERE user_id = ?',
-                           (user_id, ))
-            user = cursor.fetchone()
+        async with db_pool.get_connection() as conn:
+            cursor = await conn.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
+            user = await cursor.fetchone()
 
             if not user:
-                cursor.execute(
-                    '''
-                    INSERT INTO users (user_id, balance, sp, streak)
-                    VALUES (?, 0, 100, 0)
-                ''', (user_id, ))
-                conn.commit()
-                cursor.execute('SELECT * FROM users WHERE user_id = ?',
-                               (user_id, ))
-                user = cursor.fetchone()
+                await conn.execute(
+                    'INSERT INTO users (user_id, balance, sp, streak) VALUES (?, 0, 100, 0)',
+                    (user_id,)
+                )
+                await conn.commit()
+                cursor = await conn.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
+                user = await cursor.fetchone()
 
             return {
                 'user_id': user[0],
@@ -675,7 +761,7 @@ def get_user_data(user_id):
                 'created_at': user[5]
             }
     except Exception as e:
-        logger.error(f"❌ get_user_data error: {e}")
+        logger.error(f"❌ get_user_data error for user {user_id}: {e}", exc_info=True)
         # Return default data on error
         return {
             'user_id': user_id,
@@ -1628,16 +1714,16 @@ def enhanced_health():
 
         # API status
         status["circuit_breaker"] = api_circuit_breaker.state.value
-        status[
-            "rate_limit_remaining"] = discord_rate_limiter.max_requests - len(
-                discord_rate_limiter.requests)
+        status["rate_limit_remaining"] = discord_rate_limiter.max_requests - len(discord_rate_limiter.requests)
 
-        # Memory usage (optional - only if psutil is available)
+        # Add bot metrics
+        status.update(bot_metrics.get_stats())
+
+        # Memory usage
         try:
             import psutil
             process = psutil.Process()
-            status["memory_mb"] = round(
-                process.memory_info().rss / 1024 / 1024, 1)
+            status["memory_mb"] = round(process.memory_info().rss / 1024 / 1024, 1)
             status["cpu_percent"] = process.cpu_percent()
         except ImportError:
             status["memory_info"] = "psutil not available"
@@ -1645,11 +1731,17 @@ def enhanced_health():
         return status, 200
 
     except Exception as e:
+        bot_metrics.increment_error("health_check")
         return {
             "status": "unhealthy",
             "error": str(e),
             "timestamp": time.time()
         }, 503
+
+@app.route('/metrics')
+def metrics():
+    """Detailed metrics endpoint"""
+    return bot_metrics.get_stats()
 
 
 # ==== Discord Bot Setup ====
@@ -2180,9 +2272,38 @@ def validate_discord_input(text, max_length=2000, allow_mentions=False):
     if not allow_mentions and ("@" in text or "<@!" in text or "<@" in text):
         return False, "Mentions are not allowed in this input."
 
-    # Add more checks as needed (e.g., profanity filter, disallowed characters)
+    # Check for dangerous characters
+    dangerous_chars = ['`', '\\', '\n', '\r']
+    if any(char in text for char in dangerous_chars):
+        return False, "Input contains potentially dangerous characters."
 
     return True, None
+
+def validate_amount_input(amount_str, max_amount=1000000, min_amount=1):
+    """Enhanced amount validation with better error messages."""
+    if not isinstance(amount_str, str):
+        return None, "Amount must be a string or number."
+    
+    if amount_str.lower() == "all":
+        return "all", None
+    
+    try:
+        amount = int(amount_str)
+        if amount < min_amount:
+            return None, f"Amount must be at least {min_amount:,}."
+        if amount > max_amount:
+            return None, f"Amount cannot exceed {max_amount:,}."
+        return amount, None
+    except ValueError:
+        return None, "Invalid number format. Use whole numbers only."
+
+def sanitize_nickname(nickname):
+    """Sanitize nickname input to prevent issues."""
+    # Remove control characters and excessive whitespace
+    import re
+    nickname = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', nickname)
+    nickname = ' '.join(nickname.split())
+    return nickname.strip()[:32]  # Discord's max nickname length
 
 
 @bot.command()
