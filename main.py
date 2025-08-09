@@ -2784,7 +2784,7 @@ async def exchange(ctx, amount: str):
     embed = discord.Embed(
         title="🔄 **ENERGY TRANSMUTATION COMPLETE** 🔄",
         description=
-        f"```fix\n◆ SPIRITUAL ALCHEMY SUCCESSFUL ◆\n```\n✨ *Energy crystallizes into eternal stone...*",
+        "```fix\n◆ SPIRITUAL ALCHEMY SUCCESSFUL ◆\n```\n✨ *Energy crystallizes into eternal stone...*",
         color=0x9932CC)
 
     embed.add_field(
@@ -2812,7 +2812,7 @@ async def exchange(ctx, amount: str):
 @safe_command_wrapper
 @cooldown_check('coinflip')
 async def coinflip(ctx, guess: str, amount: str):
-    now = datetime.now(timezone.utc)
+    now = datetime.datetime.now(timezone.utc)
     user_id = str(ctx.author.id)
     guess = guess.lower()
 
@@ -2993,7 +2993,7 @@ async def buy(ctx, item: str):
         effect = "🔒 **IDENTITY SEALED** - *Your name is now protected from all changes*"
         effect_color = 0x4169E1
     elif item == "temp_admin":
-        expiry = datetime.now(timezone.utc) + datetime.timedelta(hours=1)
+        expiry = datetime.datetime.now(timezone.utc) + datetime.timedelta(hours=1)
         add_temp_admin(user_id, expiry.isoformat(), str(ctx.guild.id))
         role = ctx.guild.get_role(ROLE_ID_TEMP_ADMIN)
         if role:
@@ -3110,7 +3110,7 @@ async def givess(ctx, member: discord.Member, amount: int):
     embed.set_footer(
         text="⚡ Divine Administrative System ⚡",
         icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
-    embed.timestamp = datetime.now(timezone.utc)
+    embed.timestamp = datetime.datetime.now(timezone.utc)
 
     result, error = await safe_send(ctx, embed=embed)
     if error:
@@ -3183,7 +3183,7 @@ async def takess(ctx, member: discord.Member, amount: int):
     embed.set_footer(
         text="⚡ Divine Administrative System ⚡",
         icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
-    embed.timestamp = datetime.now(timezone.utc)
+    embed.timestamp = datetime.datetime.now(timezone.utc)
 
     result, error = await safe_send(ctx, embed=embed)
     if error:
@@ -3210,10 +3210,10 @@ async def top(ctx):
     for i, (user_id, balance) in enumerate(leaderboard):
         try:
             user = bot.get_user(int(user_id))
-            username = user.display_name if user else f"Unknown User"
+            username = user.display_name if user else "Unknown User"
 
             leaderboard_text += f"{medal_emojis[i]} **{username}** - `{balance:,}` SS\n"
-        except:
+        except Exception:
             continue
 
     if leaderboard_text:
@@ -3259,10 +3259,10 @@ async def lucky(ctx):
     for i, (user_id, sp) in enumerate(sp_leaderboard):
         try:
             user = bot.get_user(int(user_id))
-            username = user.display_name if user else f"Unknown User"
+            username = user.display_name if user else "Unknown User"
 
             leaderboard_text += f"{medal_emojis[i]} **{username}** - `{sp:,}` SP\n"
-        except:
+        except Exception:
             continue
 
     if leaderboard_text:
@@ -3296,7 +3296,7 @@ async def lucky(ctx):
 @cooldown_check('unlucky')
 async def unlucky(ctx):
     """Shows top 10 users who lost the most SP this month"""
-    current_month = datetime.now(timezone.utc).strftime("%Y-%m")
+    current_month = datetime.datetime.now(timezone.utc).strftime("%Y-%m")
     top_losers = get_top_losers(current_month, 10)
 
     if not top_losers:
@@ -3314,7 +3314,7 @@ async def unlucky(ctx):
 
         embed.set_footer(
             text=
-            f"📅 {datetime.now(timezone.utc).strftime('%B %Y')} • Keep the luck flowing!",
+            f"📅 {datetime.datetime.now(timezone.utc).strftime('%B %Y')} • Keep the luck flowing!",
             icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
 
         return await ctx.send(embed=embed)
@@ -3334,13 +3334,10 @@ async def unlucky(ctx):
     for i, (user_id, losses) in enumerate(top_losers):
         try:
             user = bot.get_user(int(user_id))
-            username = user.display_name if user else f"Unknown User"
+            username = user.display_name if user else "Unknown User"
 
             leaderboard_text += f"{skull_emojis[i]} **{username}** - `{losses:,}` SP Lost\n"
-        except:
-            continue
-
-    if leaderboard_text:
+        \except:eaderboard_text:
         embed.add_field(name="💸 **VOID'S FAVORED VICTIMS**",
                         value=leaderboard_text,
                         inline=False)

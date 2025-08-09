@@ -1,0 +1,93 @@
+@bot.command()
+@safe_command_wrapper
+@cooldown_check('unlucky')
+async def unlucky(ctx):
+    """Shows top 10 users who lost the most SP this month"""
+    current_month = datetime.datetime.now(timezone.utc).strftime("%Y-%m")
+    top_losers = get_top_losers(current_month, 10)
+
+    if not top_losers:
+        embed = discord.Embed(
+            title="🌟 **BLESSED MONTH** 🌟",
+            description=
+            "```css\n[NO SIGNIFICANT LOSSES DETECTED]\n```\n✨ *The void has been merciful this month...*",
+            color=0x32CD32)
+
+        embed.add_field(
+            name="🛡️ **COSMIC PROTECTION**",
+            value=
+            "```diff\n+ No major gambling losses recorded\n+ The realm enjoys fortune's favor\n```",
+            inline=False)
+
+        embed.set_footer(
+            text=
+            f"📅 {datetime.datetime.now(timezone.utc).strftime('%B %Y')} • Keep the luck flowing!",
+            icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
+
+        return await ctx.send(embed=embed)
+
+    total_losses = sum(losses for _, losses in top_losers)
+
+    embed = discord.Embed(
+        title="💀 **HALL OF COSMIC MISFORTUNE** 💀",
+        description=
+        "```css\n[THE VOID'S GREATEST VICTIMS]\n```\n🌑 *Those who have fed the darkness most this month...*",
+        color=0x8B0000)
+
+    # Show top 10 losers
+    skull_emojis = ["💀", "☠️", "👹", "😈", "🔥", "⚡", "💸", "😭", "😱", "🆘"]
+
+    leaderboard_text = ""
+    for i, (user_id, losses) in enumerate(top_losers):
+        try:
+            user = bot.get_user(int(user_id))
+            username = user.display_name if user else "Unknown User"
+
+            leaderboard_text += f"{skull_emojis[i]} **{username}** - `{losses:,}` SP Lost\n"
+        \except:eaderboard_text:
+        embed.add_field(name="💸 **VOID'S FAVORED VICTIMS**",
+                        value=leaderboard_text,
+                        inline=False)
+
+    embed.add_field(
+        name="🌑 **TOTAL DEVASTATION**",
+        value=
+        f"```fix\n💀 {total_losses:,} Spirit Points Consumed\n```\n*The accumulated suffering feeds the endless void...*",
+        inline=False)
+
+    # Calculate average loss and provide insight
+    average_loss = total_losses // len(top_losers) if top_losers else 0
+
+    if total_losses >= 500000:
+        void_status = "🌑 **VOID ASCENDANT** - *The darkness grows stronger with each sacrifice*"
+        status_color = "Catastrophic"
+    elif total_losses >= 250000:
+        void_status = "💀 **VOID DOMINANT** - *Misfortune reigns supreme this month*"
+        status_color = "Critical"
+    elif total_losses >= 100000:
+        void_status = "😈 **VOID ACTIVE** - *The gambling demons feast well*"
+        status_color = "High"
+    else:
+        void_status = "🔥 **VOID STIRRING** - *Minor tributes to the darkness*"
+        status_color = "Moderate"
+
+    embed.add_field(
+        name="👹 **VOID ANALYSIS**",
+        value=
+        f"```yaml\nAverage Loss: {average_loss:,} SP\nVoid Status: {status_color}\nMonth: {datetime.now(timezone.utc).strftime('%B %Y')}\n```\n{void_status}",
+        inline=False)
+
+    embed.add_field(
+        name="⚠️ **COSMIC WARNING**",
+        value=
+        "```diff\n- The void remembers every sacrifice\n- Fortune is fickle, wisdom is eternal\n+ Practice restraint in your cosmic journey\n```",
+        inline=False)
+
+    embed.set_footer(
+        text=
+        f"💀 Monthly Misfortune Report • {datetime.now(timezone.utc).strftime('%B %Y')}",
+        icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
+
+    result, error = await safe_send(ctx, embed=embed)
+    if error:
+        logger.error(f"❌ Failed to send message: {error}")
