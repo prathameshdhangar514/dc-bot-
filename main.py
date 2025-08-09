@@ -455,6 +455,122 @@ async def safe_add_reaction(message, emoji):
     """Safely add reactions with rate limiting"""
     return await safe_api_call(message.add_reaction, emoji)
 
+async def check_database_integrity():
+    """Check if database is corrupted and attempt repair"""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        conn.execute("PRAGMA integrity_check;").fetchone()
+        conn.close()
+        return True
+    except sqlite3.DatabaseError as e:
+        logger.error(f"❌ Database corruption detected: {e}")
+        return False
+
+async def init_database():
+    """Initialize database with corruption check"""
+    try:
+        # Check if database exists and is intact
+        if os.path.exists(DB_FILE):
+            if not await check_database_integrity():
+                logger.warning("🔄 Database corruption detected during initialization")
+
+                # Try to restore from backup first
+                if not await restore_from_latest_backup():
+                    # If no backup, create fresh database
+                    logger.warning("🆕 Creating fresh database")
+                    os.remove(DB_FILE)
+
+        # Proceed with normal initialization
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+
+        # Create tables with proper error handling
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                user_id TEXT PRIMARY KEY,
+                balance INTEGER DEFAULT 0,
+                sp INTEGER DEFAULT 100,
+                daily_streak INTEGER DEFAULT 0,
+                last_daily TEXT DEFAULT ''
+            )
+        ''')
+
+        # Add other tables...
+
+        conn.commit()
+        conn.close()
+
+        logger.info("✅ Database initialized successfully")
+        return True
+
+    except Exception as e:
+        logger.error(f"❌ Database initialization failed: {e}")
+        return False
+
+async def repair_database():
+    """Attempt to repair corrupted database"""
+    try:
+        # Backup corrupted database
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        corrupted_backup = f"{DB_FILE}.corrupted_{timestamp}"
+        shutil.copy2(DB_FILE, corrupted_backup)
+        logger.info(f"💾 Corrupted database backed up to: {corrupted_backup}")
+
+        # Try to dump and restore
+        temp_dump = f"temp_dump_{timestamp}.sql"
+
+        # Attempt to dump recoverable data
+        os.system(f"sqlite3 {DB_FILE} .dump > {temp_dump}")
+
+        # Remove corrupted file
+        os.remove(DB_FILE)
+
+        # Restore from dump
+        os.system(f"sqlite3 {DB_FILE} < {temp_dump}")
+
+        # Clean up
+        os.remove(temp_dump)
+
+        # Initialize database structure
+        await init_database()
+
+        logger.info("✅ Database repair attempted")
+        return True
+
+    except Exception as e:
+        logger.error(f"❌ Database repair failed: {e}")
+        return False
+
+async def restore_from_latest_backup():
+    """Restore database from latest backup"""
+    try:
+        backup_dir = "backups"
+        if not os.path.exists(backup_dir):
+            logger.error("❌ No backup directory found")
+            return False
+
+        backup_files = [f for f in os.listdir(backup_dir) if f.endswith('.db')]
+        if not backup_files:
+            logger.error("❌ No backup files found")
+            return False
+
+        # Get latest backup
+        latest_backup = max(backup_files, key=lambda x: os.path.getmtime(os.path.join(backup_dir, x)))
+        backup_path = os.path.join(backup_dir, latest_backup)
+
+        # Backup current corrupted file
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        shutil.copy2(DB_FILE, f"{DB_FILE}.corrupted_{timestamp}")
+
+        # Restore from backup
+        shutil.copy2(backup_path, DB_FILE)
+
+        logger.info(f"✅ Database restored from backup: {latest_backup}")
+        return True
+
+    except Exception as e:
+        logger.error(f"❌ Backup restore failed: {e}")
+        return False
 
 async def safe_remove_roles(member, *roles):
     """Safely remove roles with rate limiting"""
@@ -732,6 +848,39 @@ async def _safe_update_user_data(user_id, **kwargs):
         logger.error(f"❌ Update error: {e}")
         return False
 
+async def safe_db_operation(operation_func, *args, **kwargs):
+    """Safely execute database operations with error handling"""
+    max_retries = 3
+    retry_count = 0
+
+    while retry_count < max_retries:
+        try:
+            return await operation_func(*args, **kwargs)
+        except sqlite3.Error as e:
+            logger.error(f"❌ Database error (attempt {retry_count + 1}): {e}")
+
+            if "malformed" in str(e).lower() or "corrupt" in str(e).lower():
+                if retry_count == 0:
+                    # First attempt: try to repair
+                    if await repair_database():
+                        retry_count += 1
+                        continue
+                elif retry_count == 1:
+                    # Second attempt: restore from backup
+                    if await restore_from_latest_backup():
+                        retry_count += 1
+                        continue
+                else:
+                    # Final attempt: reinitialize database
+                    await init_database()
+
+            retry_count += 1
+            if retry_count < max_retries:
+                await asyncio.sleep(1)  # Wait before retry
+
+    logger.error("❌ All database operation attempts failed")
+    return None
+
 
 async def safe_update_user_data(user_id, **kwargs):
     """Thread-safe user data update with retry logic (async wrapper)"""
@@ -756,11 +905,67 @@ async def safe_update_user_data(user_id, **kwargs):
 
     return False
 
+async def update_user_data(user_id: str, **kwargs):
+    """Update user data asynchronously - FIXED VERSION"""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
 
-def update_user_data(user_id, **kwargs):
-    """Wrapper for safe_update_user_data to maintain compatibility"""
-    return asyncio.run(safe_update_user_data(user_id, **kwargs))
+        # Get current data
+        cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+        user_data = cursor.fetchone()
 
+        if not user_data:
+            # Create new user
+            cursor.execute("""
+                INSERT INTO users (user_id, balance, sp, daily_streak, last_daily)
+                VALUES (?, ?, ?, ?, ?)
+            """, (user_id, kwargs.get('balance', 0), kwargs.get('sp', 100), 
+                  kwargs.get('daily_streak', 0), kwargs.get('last_daily', '')))
+        else:
+            # Update existing user
+            set_clauses = []
+            values = []
+
+            for key, value in kwargs.items():
+                if key in ['balance', 'sp', 'daily_streak', 'last_daily']:
+                    set_clauses.append(f"{key} = ?")
+                    values.append(value)
+
+            if set_clauses:
+                values.append(user_id)
+                query = f"UPDATE users SET {', '.join(set_clauses)} WHERE user_id = ?"
+                cursor.execute(query, values)
+
+        conn.commit()
+        conn.close()
+        return True
+
+    except sqlite3.Error as e:
+        logger.error(f"❌ Database error in update_user_data: {e}")
+
+        # Check if database is corrupted
+        if "malformed" in str(e).lower() or "corrupt" in str(e).lower():
+            logger.warning("🔄 Database corruption detected, attempting repair...")
+
+            # Attempt repair
+            if await repair_database():
+                # Retry the operation
+                try:
+                    conn = sqlite3.connect(DB_FILE)
+                    cursor = conn.cursor()
+                    # ... repeat the operation
+                    conn.commit()
+                    conn.close()
+                    return True
+                except Exception:
+                    # If repair fails, restore from backup
+                    await restore_from_latest_backup()
+
+        return False
+    except Exception as e:
+        logger.error(f"❌ Unexpected error in update_user_data: {e}")
+        return False
 
 def get_monthly_stats(user_id, month=None):
     """Get monthly gambling stats for user"""
@@ -1537,6 +1742,28 @@ async def api_health_monitor():
     except Exception as e:
         logger.error(f"❌ API health monitor error: {e}")
 
+async def startup_sequence():
+    """Safe startup sequence with database checks"""
+    try:
+        logger.info("🚀 Starting bot initialization...")
+
+        # Initialize database
+        if not await init_database():
+            logger.error("❌ Database initialization failed")
+            return False
+
+        # Check database integrity
+        if not await check_database_integrity():
+            logger.error("❌ Database integrity check failed")
+            return False
+
+        logger.info("✅ Bot initialization complete")
+        return True
+
+    except Exception as e:
+        logger.error(f"❌ Startup sequence failed: {e}")
+        return False
+
 
 async def main():
     """Main async function with proper startup sequence and error recovery"""
@@ -2250,7 +2477,8 @@ async def usename(ctx, member: discord.Member, *, new_nickname: str):
         user_id = str(ctx.author.id)  # Add this line to get user_id
         user_data = get_user_data(user_id)  # Add this line to get user_data
         new_balance = user_data["balance"] - 10000
-        update_user_data(user_id, balance=new_balance)
+        await update_user_data(target_id, balance=new_balance)
+
 
         # Set expiry (24 hours from now)
         expires_at = (datetime.datetime.now(timezone.utc) +
@@ -2319,7 +2547,7 @@ async def usename(ctx, member: discord.Member, *, new_nickname: str):
 @safe_command_wrapper
 @cooldown_check('sendsp')
 async def sendsp(ctx, member: discord.Member, amount: int):
-    """Send Spirit Points to another user (Owner only)"""
+    """Send Spirit Points to another user (Owner only) - FIXED"""
     try:
         # Check if user has the Owner role
         user_role_ids = [role.id for role in ctx.author.roles]
@@ -2346,8 +2574,7 @@ async def sendsp(ctx, member: discord.Member, amount: int):
                 color=0xFF4500)
             return await ctx.send(embed=embed)
 
-        # Add maximum amount check to prevent abuse
-        if amount > 1000000:  # Adjust limit as needed
+        if amount > 1000000:
             embed = discord.Embed(
                 title="⚠️ **AMOUNT TOO LARGE** ⚠️",
                 description=("```diff\n"
@@ -2357,7 +2584,6 @@ async def sendsp(ctx, member: discord.Member, amount: int):
                 color=0xFF4500)
             return await ctx.send(embed=embed)
 
-        # Check if member is bot
         if member.bot:
             embed = discord.Embed(
                 title="🤖 **INVALID TARGET** 🤖",
@@ -2367,14 +2593,21 @@ async def sendsp(ctx, member: discord.Member, amount: int):
 
         # Get receiver data
         receiver_id = str(member.id)
-        receiver_data = get_user_data(receiver_id)
-        old_sp = receiver_data.get("sp", 0)  # Use .get() for safety
+        receiver_data = get_user_data(receiver_id)  # This should be sync
+        old_sp = receiver_data.get("sp", 0)
         new_sp = old_sp + amount
 
-        # Update receiver's SP
-        update_user_data(receiver_id, sp=new_sp)
+        # Update receiver's SP - FIXED: Use await
+        success = await update_user_data(receiver_id, sp=new_sp)
 
-        # Log transaction
+        if not success:
+            embed = discord.Embed(
+                title="❌ **DATABASE ERROR** ❌",
+                description="```diff\n- Failed to update user data\n- Please try again later\n```",
+                color=0xFF0000)
+            return await ctx.send(embed=embed)
+
+        # Log transaction - Make this async too if needed
         log_transaction(receiver_id, "owner_sp_grant", amount, old_sp, new_sp,
                         f"SP grant by Owner {ctx.author.display_name}")
 
@@ -2390,8 +2623,7 @@ async def sendsp(ctx, member: discord.Member, amount: int):
 
         embed.add_field(
             name="👑 **SUPREME OWNER**",
-            value=
-            f"```ansi\n\u001b[0;35m{ctx.author.display_name}\u001b[0m\n```",
+            value=f"```ansi\n\u001b[0;35m{ctx.author.display_name}\u001b[0m\n```",
             inline=True)
 
         embed.add_field(
@@ -2407,22 +2639,12 @@ async def sendsp(ctx, member: discord.Member, amount: int):
                         value=f"```fix\n⚡ {new_sp:,} SP\n```",
                         inline=False)
 
-        embed.add_field(
-            name="🌟 **DIVINE BLESSING**",
-            value=("```css\n"
-                   "[Raw spiritual energy flows from the cosmic throne]\n"
-                   "```\n"
-                   "💫 *The Owner's will shapes reality itself...*"),
-            inline=False)
-
         embed.set_footer(
             text="👑 Supreme Owner Privilege • Spirit Point Grant System",
             icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
 
-        # Use modern datetime
-        embed.timestamp = datetime.datetime.now(timezone.utc)
+        embed.timestamp = datetime.now(timezone.utc)
 
-        # Send the embed
         result, error = await safe_send(ctx, embed=embed)
         if error:
             logger.error(f"❌ Failed to send message: {error}")
@@ -2824,7 +3046,8 @@ async def exchange(ctx, amount: str):
     new_sp = old_sp - exchange_amount
     new_balance = old_balance + exchange_amount
 
-    update_user_data(user_id, sp=new_sp, balance=new_balance)
+    await update_user_data(user_id, balance=new_balance)
+
 
     # Log transaction
     log_transaction(user_id, "exchange", exchange_amount, old_balance,
@@ -2918,7 +3141,8 @@ async def coinflip(ctx, guess: str, amount: str):
 
     if won:
         new_sp = sp + bet
-        update_user_data(user_id, sp=new_sp)
+        await update_user_data(user_id, balance=new_balance)
+
         update_monthly_stats(user_id, win_amount=bet)
         log_transaction(user_id, "gambling_win", bet, sp, new_sp,
                         f"Coinflip win: {flip}")
@@ -2938,7 +3162,8 @@ async def coinflip(ctx, guess: str, amount: str):
                         inline=True)
     else:
         new_sp = sp - bet
-        update_user_data(user_id, sp=new_sp)
+        await update_user_data(user_id, balance=new_balance)
+
         update_monthly_stats(user_id, loss_amount=bet)
         log_transaction(user_id, "gambling_loss", -bet, sp, new_sp,
                         f"Coinflip loss: {flip}")
@@ -3067,7 +3292,8 @@ async def buy(ctx, item: str):
 
     # Update balance
     new_balance = balance - item_data["price"]
-    update_user_data(user_id, balance=new_balance)
+    await update_user_data(user_id, balance=new_balance)
+
 
     # Log transaction
     log_transaction(user_id, "shop_purchase", -item_data["price"], balance,
@@ -3105,66 +3331,87 @@ async def buy(ctx, item: str):
 @bot.command()
 @safe_command_wrapper
 async def givess(ctx, member: discord.Member, amount: int):
-    # Check if user has administrator permissions
-    if not ctx.author.guild_permissions.administrator:
+    """Give Spirit Stones to another user (Admin only) - FIXED"""
+    try:
+        # Check if user has administrator permissions
+        if not ctx.author.guild_permissions.administrator:
+            embed = discord.Embed(
+                title="🚫 **ACCESS DENIED** 🚫",
+                description=
+                "```diff\n- INSUFFICIENT AUTHORITY\n- Administrator permissions required\n```\n⚡ *Only those with divine authority may grant such power...*",
+                color=0xFF0000)
+            return await ctx.send(embed=embed)
+
+        if amount <= 0:
+            embed = discord.Embed(
+                title="❌ **INVALID AMOUNT** ❌",
+                description=
+                "```diff\n- ERROR: Amount must be positive\n+ Enter a valid positive number\n```",
+                color=0xFF4500)
+            return await ctx.send(embed=embed)
+
+        receiver_id = str(member.id)
+        receiver_data = get_user_data(receiver_id)  # Sync function
+        old_balance = receiver_data.get("balance", 0)
+        new_balance = old_balance + amount
+
+        # FIXED: Use await for async function
+        success = await update_user_data(receiver_id, balance=new_balance)
+
+        if not success:
+            embed = discord.Embed(
+                title="❌ **DATABASE ERROR** ❌",
+                description="```diff\n- Failed to update user data\n- Please try again later\n```",
+                color=0xFF0000)
+            return await ctx.send(embed=embed)
+
+        # Log transaction
+        log_transaction(receiver_id, "admin_grant", amount, old_balance,
+                        new_balance, f"Admin grant by {ctx.author.display_name}")
+
         embed = discord.Embed(
-            title="🚫 **ACCESS DENIED** 🚫",
+            title="✨ **DIVINE BLESSING GRANTED** ✨",
             description=
-            "```diff\n- INSUFFICIENT AUTHORITY\n- Administrator permissions required\n```\n⚡ *Only those with divine authority may grant such power...*",
+            "```fix\n⚡ ADMINISTRATOR AUTHORITY ACTIVATED ⚡\n```\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n*🌟 The cosmic treasury flows with divine will 🌟*",
+            color=0x00FF7F)
+
+        embed.add_field(
+            name="👑 **ADMINISTRATOR**",
+            value=f"```ansi\n\u001b[0;35m{ctx.author.display_name}\u001b[0m\n```",
+            inline=True)
+
+        embed.add_field(
+            name="🎯 **RECIPIENT**",
+            value=f"```ansi\n\u001b[0;36m{member.display_name}\u001b[0m\n```",
+            inline=True)
+
+        embed.add_field(name="💰 **AMOUNT GRANTED**",
+                        value=f"```yaml\n💎 +{amount:,} Spirit Stones\n```",
+                        inline=False)
+
+        embed.add_field(name="💎 **NEW BALANCE**",
+                        value=f"```fix\n💎 {new_balance:,} SS\n```",
+                        inline=False)
+
+        embed.set_footer(
+            text="⚡ Divine Administrative System ⚡",
+            icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
+        embed.timestamp = datetime.now(timezone.utc)
+
+        result, error = await safe_send(ctx, embed=embed)
+        if error:
+            logger.error(f"❌ Failed to send message: {error}")
+
+    except Exception as e:
+        logger.error(f"❌ Critical error in givess: {e}")
+        import traceback
+        traceback.print_exc()
+
+        error_embed = discord.Embed(
+            title="❌ **SYSTEM ERROR** ❌",
+            description="```diff\n- Database operation failed\n- Please check logs\n```",
             color=0xFF0000)
-        return await ctx.send(embed=embed)
-
-    if amount <= 0:
-        embed = discord.Embed(
-            title="❌ **INVALID AMOUNT** ❌",
-            description=
-            "```diff\n- ERROR: Amount must be positive\n+ Enter a valid positive number\n```",
-            color=0xFF4500)
-        return await ctx.send(embed=embed)
-
-    receiver_id = str(member.id)
-    receiver_data = get_user_data(receiver_id)
-    old_balance = receiver_data["balance"]
-    new_balance = old_balance + amount
-
-    update_user_data(receiver_id, balance=new_balance)
-
-    # Log transaction
-    log_transaction(receiver_id, "admin_grant", amount, old_balance,
-                    new_balance, f"Admin grant by {ctx.author.display_name}")
-
-    embed = discord.Embed(
-        title="✨ **DIVINE BLESSING GRANTED** ✨",
-        description=
-        "```fix\n⚡ ADMINISTRATOR AUTHORITY ACTIVATED ⚡\n```\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n*🌟 The cosmic treasury flows with divine will 🌟*",
-        color=0x00FF7F)
-
-    embed.add_field(
-        name="👑 **ADMINISTRATOR**",
-        value=f"```ansi\n\u001b[0;35m{ctx.author.display_name}\u001b[0m\n```",
-        inline=True)
-
-    embed.add_field(
-        name="🎯 **RECIPIENT**",
-        value=f"```ansi\n\u001b[0;36m{member.display_name}\u001b[0m\n```",
-        inline=True)
-
-    embed.add_field(name="💰 **AMOUNT GRANTED**",
-                    value=f"```yaml\n💎 +{amount:,} Spirit Stones\n```",
-                    inline=False)
-
-    embed.add_field(name="💎 **NEW BALANCE**",
-                    value=f"```fix\n💎 {new_balance:,} SS\n```",
-                    inline=False)
-
-    embed.set_footer(
-        text="⚡ Divine Administrative System ⚡",
-        icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
-    embed.timestamp = datetime.datetime.now(timezone.utc)
-
-    result, error = await safe_send(ctx, embed=embed)
-    if error:
-        logger.error(f"❌ Failed to send message: {error}")
+        await ctx.send(embed=error_embed)
 
 
 @bot.command()
@@ -3200,7 +3447,8 @@ async def takess(ctx, member: discord.Member, amount: int):
         return await ctx.send(embed=embed)
 
     new_balance = current_balance - amount
-    update_user_data(target_id, balance=new_balance)
+    await update_user_data(target_id, balance=new_balance)
+
 
     # Log transaction
     log_transaction(target_id, "admin_remove", -amount, current_balance,
@@ -3437,6 +3685,49 @@ async def unlucky(ctx):
     result, error = await safe_send(ctx, embed=embed)
     if error:
         logger.error(f"❌ Failed to send message: {error}")
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def emergency_repair(ctx):
+    """Emergency database repair command"""
+    embed = discord.Embed(
+        title="🚨 **EMERGENCY DATABASE REPAIR** 🚨",
+        description="```css\n[INITIATING EMERGENCY PROTOCOLS]\n```\n⚠️ *Attempting to repair database corruption...*",
+        color=0xFF6B00)
+
+    message = await ctx.send(embed=embed)
+
+    try:
+        # Check database integrity
+        if await check_database_integrity():
+            embed.description = "```diff\n+ Database integrity check passed\n+ No repair needed\n```"
+            embed.color = 0x00FF00
+        else:
+            embed.description = "```css\n[ATTEMPTING DATABASE REPAIR]\n```"
+            await message.edit(embed=embed)
+
+            # Attempt repair
+            if await repair_database():
+                embed.description = "```diff\n+ Database repair successful\n+ System restored\n```"
+                embed.color = 0x00FF00
+            else:
+                # Try backup restore
+                embed.description = "```css\n[RESTORING FROM BACKUP]\n```"
+                await message.edit(embed=embed)
+
+                if await restore_from_latest_backup():
+                    embed.description = "```diff\n+ Backup restore successful\n+ System restored from backup\n```"
+                    embed.color = 0xFFAA00
+                else:
+                    embed.description = "```diff\n- All repair attempts failed\n- Manual intervention required\n```"
+                    embed.color = 0xFF0000
+
+        await message.edit(embed=embed)
+
+    except Exception as e:
+        embed.description = f"```diff\n- Emergency repair failed\n- Error: {str(e)[:100]}...\n```"
+        embed.color = 0xFF0000
+        await message.edit(embed=embed)
 
 
 @bot.command()
