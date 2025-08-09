@@ -1185,7 +1185,7 @@ def get_leaderboard(field='balance', limit=10):
 def get_top_losers(month=None, limit=10):
     """Get top losers for the month"""
     if not month:
-        month = datetime.now(timezone.utc).strftime("%Y-%m")
+        month = datetime.datetime.now(timezone.utc).strftime("%Y-%m")
 
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
@@ -1315,7 +1315,7 @@ def reset_monthly_stats():
     cursor = conn.cursor()
 
     # Clear previous month's stats (keep only current month)
-    current_month = datetime.now(timezone.utc).strftime("%Y-%m")
+    current_month = datetime.datetime.now(timezone.utc).strftime("%Y-%m")
     cursor.execute('DELETE FROM monthly_stats WHERE month != ?',
                    (current_month, ))
 
@@ -1381,7 +1381,7 @@ async def perform_monthly_conversion():
 async def monthly_conversion_check():
     """Check if it's time for monthly conversion (1st of month, 00:00 UTC)"""
     try:
-        now = datetime.now(timezone.utc)
+        now = datetime.datetime.now(timezone.utc)
 
         # Check if it's the 1st day of the month and between 00:00-01:00
         if now.day == 1 and now.hour == 0:

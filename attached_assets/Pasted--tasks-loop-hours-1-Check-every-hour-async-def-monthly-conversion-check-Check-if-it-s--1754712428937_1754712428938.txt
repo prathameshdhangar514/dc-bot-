@@ -1,0 +1,71 @@
+@tasks.loop(hours=1)  # Check every hour
+async def monthly_conversion_check():
+    """Check if it's time for monthly conversion (1st of month, 00:00 UTC)"""
+    try:
+        now = datetime.datetime.now(timezone.utc)
+
+        # Check if it's the 1st day of the month and between 00:00-01:00
+        if now.day == 1 and now.hour == 0:
+            logger.info("🗓️ Monthly conversion time detected!")
+
+            total_converted, user_count = await perform_monthly_conversion()
+
+            if total_converted > 0:
+                # Create backup after monthly conversion
+                if github_backup:
+                    backup_file = create_backup_with_cloud_storage()
+                    if backup_file:
+                        success, result = github_backup.upload_backup_to_github(
+                            backup_file)
+                        if success:
+                            logger.info("✅ Post-conversion backup created")
+
+                # Notify in all guilds (optional)
+                for guild in bot.guilds:
+                    # Find a general channel to announce
+                    channel = discord.utils.get(
+                        guild.channels,
+                        name='general') or guild.text_channels[0]
+                    if channel:
+                        try:
+                            embed = discord.Embed(
+                                title="🌟 **MONTHLY ASCENSION COMPLETE** 🌟",
+                                description=
+                                "```css\n[SPIRIT ENERGY CRYSTALLIZATION RITUAL]\n```\n💎 *The cosmic cycle renews, power has been preserved...*",
+                                color=0x00FF7F)
+
+                            embed.add_field(
+                                name="⚗️ **CONVERSION RESULTS**",
+                                value=
+                                f"```yaml\nUsers Affected: {user_count:,}\nTotal SP Converted: {total_converted:,}\nConversion Rate: 1 SP = 1 SS\n```",
+                                inline=False)
+
+                            embed.add_field(
+                                name="🔄 **WHAT HAPPENED?**",
+                                value=
+                                "```diff\n+ All Spirit Points → Spirit Stones\n+ SP reset to 100 for everyone\n+ Monthly gambling stats reset\n+ Your wealth is now permanent!\n```",
+                                inline=False)
+
+                            embed.add_field(
+                                name="🚀 **NEW MONTH BEGINS**",
+                                value=
+                                "```fix\nFresh start for daily claims and gambling!\nYour converted SS is safe forever.\nTime to build your SP again!\n```",
+                                inline=False)
+
+                            embed.set_footer(
+                                text=
+                                f"💫 Monthly Conversion • {now.strftime('%B %Y')}",
+                                icon_url=guild.icon.url
+                                if guild.icon else None)
+
+                            await channel.send(embed=embed)
+                            logger.info(
+                                f"📢 Monthly conversion announced in {guild.name}"
+                            )
+
+                        except Exception as e:
+                            logger.error(
+                                f"❌ Failed to announce in {guild.name}: {e}")
+
+    except Exception as e:
+        logger.error(f"❌ Monthly conversion check error: {e}")
