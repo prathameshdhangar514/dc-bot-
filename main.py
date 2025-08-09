@@ -14,7 +14,6 @@ import threading
 from queue import Queue
 from concurrent.futures import ThreadPoolExecutor
 import signal
-import psutil
 import sys
 import aiohttp
 import requests
@@ -483,6 +482,7 @@ async def handle_global_error(ctx, error):
             await ctx.send(embed=embed)
         except Exception as embed_send_error:
             # Fallback: try sending a simple text message
+            logger.error(f"❌ Error sending embed: {embed_send_error}")
             try:
                 await ctx.send(
                     "❌ A system error occurred. Please contact an administrator."
@@ -1604,6 +1604,7 @@ def enhanced_health():
             "rate_limit_remaining"] = discord_rate_limiter.max_requests - len(
                 discord_rate_limiter.requests)
 
+        # Memory usage (optional - only if psutil is available)
         # Memory usage (optional - only if psutil is available)
         try:
             import psutil
