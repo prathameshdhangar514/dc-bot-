@@ -3337,7 +3337,10 @@ async def unlucky(ctx):
             username = user.display_name if user else "Unknown User"
 
             leaderboard_text += f"{skull_emojis[i]} **{username}** - `{losses:,}` SP Lost\n"
-        \except:eaderboard_text:
+        except Exception:
+            continue
+
+    if leaderboard_text:
         embed.add_field(name="💸 **VOID'S FAVORED VICTIMS**",
                         value=leaderboard_text,
                         inline=False)
@@ -3367,7 +3370,7 @@ async def unlucky(ctx):
     embed.add_field(
         name="👹 **VOID ANALYSIS**",
         value=
-        f"```yaml\nAverage Loss: {average_loss:,} SP\nVoid Status: {status_color}\nMonth: {datetime.now(timezone.utc).strftime('%B %Y')}\n```\n{void_status}",
+        f"```yaml\nAverage Loss: {average_loss:,} SP\nVoid Status: {status_color}\nMonth: {datetime.datetime.now(timezone.utc).strftime('%B %Y')}\n```\n{void_status}",
         inline=False)
 
     embed.add_field(
@@ -3378,7 +3381,7 @@ async def unlucky(ctx):
 
     embed.set_footer(
         text=
-        f"💀 Monthly Misfortune Report • {datetime.now(timezone.utc).strftime('%B %Y')}",
+        f"💀 Monthly Misfortune Report • {datetime.datetime.now(timezone.utc).strftime('%B %Y')}",
         icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
 
     result, error = await safe_send(ctx, embed=embed)
