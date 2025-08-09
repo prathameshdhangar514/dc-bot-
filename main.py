@@ -490,8 +490,9 @@ async def init_database():
                 user_id TEXT PRIMARY KEY,
                 balance INTEGER DEFAULT 0,
                 sp INTEGER DEFAULT 100,
-                daily_streak INTEGER DEFAULT 0,
-                last_daily TEXT DEFAULT ''
+                last_claim TEXT DEFAULT '',
+                streak INTEGER DEFAULT 0,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         ''')
 
@@ -511,7 +512,7 @@ async def repair_database():
     """Attempt to repair corrupted database"""
     try:
         # Backup corrupted database
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         corrupted_backup = f"{DB_FILE}.corrupted_{timestamp}"
         shutil.copy2(DB_FILE, corrupted_backup)
         logger.info(f"💾 Corrupted database backed up to: {corrupted_backup}")
@@ -559,7 +560,7 @@ async def restore_from_latest_backup():
         backup_path = os.path.join(backup_dir, latest_backup)
 
         # Backup current corrupted file
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         shutil.copy2(DB_FILE, f"{DB_FILE}.corrupted_{timestamp}")
 
         # Restore from backup
@@ -881,7 +882,6 @@ async def safe_db_operation(operation_func, *args, **kwargs):
     logger.error("❌ All database operation attempts failed")
     return None
 
-
 async def safe_update_user_data(user_id, **kwargs):
     """Thread-safe user data update with retry logic (async wrapper)"""
     max_retries = 3
@@ -920,7 +920,7 @@ async def update_user_data(user_id: str, **kwargs):
             cursor.execute("""
                 INSERT INTO users (user_id, balance, sp, daily_streak, last_daily)
                 VALUES (?, ?, ?, ?, ?)
-            """, (user_id, kwargs.get('balance', 0), kwargs.get('sp', 100), 
+            """, (user_id, kwargs.get('balance', 0), kwargs.get('sp', 100),
                   kwargs.get('daily_streak', 0), kwargs.get('last_daily', '')))
         else:
             # Update existing user
@@ -1217,8 +1217,7 @@ def restore_from_cloud():
         if not restored_from_github:
             if not os.path.exists("backups"):
                 logger.warning(
-                    "⚠️ No backup found to restore from. Creating a new database."
-                )
+                    "⚠️ No backup found to restore from. Creating a new database.")
                 init_database()
                 return True
 
@@ -1228,8 +1227,7 @@ def restore_from_cloud():
             ]
             if not backup_files:
                 logger.warning(
-                    "⚠️ No backup found to restore from. Creating a new database."
-                )
+                    "⚠️ No backup found to restore from. Creating a new database.")
                 init_database()
                 return True
 
@@ -1743,28 +1741,46 @@ async def api_health_monitor():
         logger.error(f"❌ API health monitor error: {e}")
 
 async def startup_sequence():
-    """Safe startup sequence with database checks"""
+    """Safe startup sequence with health checks"""
+    logger.info("🚀 Starting bot initialization...")
+
+    # Test database first
     try:
-        logger.info("🚀 Starting bot initialization...")
-
-        # Initialize database
-        if not await init_database():
-            logger.error("❌ Database initialization failed")
-            return False
-
-        # Check database integrity
-        if not await check_database_integrity():
-            logger.error("❌ Database integrity check failed")
-            return False
-
-        logger.info("✅ Bot initialization complete")
-        return True
-
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM users")
+            logger.info("✅ Database connection verified")
     except Exception as e:
-        logger.error(f"❌ Startup sequence failed: {e}")
+        logger.error(f"❌ Database startup failed: {e}")
         return False
 
+    # Test Discord API
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(
+                total=10)) as session:
+            headers = {"Authorization": f"Bot {TOKEN}"}
+            async with session.get("https://discord.com/api/v10/users/@me",
+                                   headers=headers) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    logger.info(
+                        f"✅ Discord API connection verified: {data.get('username')}"
+                    )
+                else:
+                    logger.error(f"❌ Discord API error: {resp.status}")
+                    return False
+    except Exception as e:
+        logger.error(f"❌ Discord API test failed: {e}")
+        return False
 
+    # Initialize circuit breaker
+    api_circuit_breaker.state = CircuitState.CLOSED
+    logger.info("✅ Circuit breaker initialized")
+
+    return True
+
+
+# ==== Main Bot Execution ====
 async def main():
     """Main async function with proper startup sequence and error recovery"""
     global bot
@@ -2312,12 +2328,11 @@ async def nextconvert(ctx):
     embed.add_field(
         name="💡 **PRO TIP**",
         value=
-        "```fix\nSP converts automatically - no action needed!\nYour SS balance is permanent storage.\n```",
+        "```fix\nSP converts automatically - no action needed!\nYour SS balance is permanent storage.\nTime to build your SP again!\n```",
         inline=False)
 
     embed.set_footer(
-        text=
-        "💫 Monthly conversion happens automatically on the 1st of each month",
+        text="💫 Monthly conversion happens automatically on the 1st of each month",
         icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
 
     result, error = await safe_send(ctx, embed=embed)
@@ -2642,8 +2657,7 @@ async def sendsp(ctx, member: discord.Member, amount: int):
         embed.set_footer(
             text="👑 Supreme Owner Privilege • Spirit Point Grant System",
             icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
-
-        embed.timestamp = datetime.now(timezone.utc)
+        embed.timestamp = datetime.datetime.now(timezone.utc)
 
         result, error = await safe_send(ctx, embed=embed)
         if error:
@@ -2659,7 +2673,6 @@ async def sendsp(ctx, member: discord.Member, amount: int):
 
 
 @bot.command()
-@safe_command_wrapper
 @commands.has_permissions(administrator=True)
 async def restorebackup(ctx):
     """Restore database from cloud backup (GitHub or local)"""
@@ -2792,9 +2805,8 @@ async def apistatus(ctx):
                             value=f"```\n{command_list}\n```",
                             inline=True)
 
-        embed.set_footer(
-            text="🔄 Updates every 5 minutes • API monitoring active",
-            icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
+        embed.set_footer(text="🔄 Updates every 5 minutes • API monitoring active",
+                         icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
 
         result, error = await safe_send(ctx, embed=embed)
         if error:
@@ -3046,8 +3058,7 @@ async def exchange(ctx, amount: str):
     new_sp = old_sp - exchange_amount
     new_balance = old_balance + exchange_amount
 
-    await update_user_data(user_id, balance=new_balance)
-
+    await update_user_data(user_id, balance=new_balance, sp=new_sp)
 
     # Log transaction
     log_transaction(user_id, "exchange", exchange_amount, old_balance,
@@ -3396,7 +3407,7 @@ async def givess(ctx, member: discord.Member, amount: int):
         embed.set_footer(
             text="⚡ Divine Administrative System ⚡",
             icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
-        embed.timestamp = datetime.now(timezone.utc)
+        embed.timestamp = datetime.datetime.now(timezone.utc)
 
         result, error = await safe_send(ctx, embed=embed)
         if error:
@@ -3685,6 +3696,7 @@ async def unlucky(ctx):
     result, error = await safe_send(ctx, embed=embed)
     if error:
         logger.error(f"❌ Failed to send message: {error}")
+
 
 @bot.command()
 @commands.has_permissions(administrator=True)
