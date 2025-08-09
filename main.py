@@ -1029,6 +1029,10 @@ def restore_from_cloud():
             init_database()
             return True
 
+    except Exception as e:
+        logger.error(f"❌ Database restore failed: {e}")
+        return False
+
 
 def log_transaction(user_id,
                     transaction_type,
@@ -1449,7 +1453,7 @@ async def monthly_conversion_check():
 # API Health monitoring
 @tasks.loop(minutes=5)
 async def api_health_monitor():
-    """Monitor API health and reset counters"""
+    """Monitor API usage and rate limiting status"""
     try:
         now = time.time()
 
@@ -2028,9 +2032,8 @@ async def nextconvert(ctx):
         "```fix\nSP converts automatically - no action needed!\nYour SS balance is permanent storage.\n```",
         inline=False)
 
-    embed.set_footer(
-        text="💫 Monthly conversion happens automatically on the 1st of each month",
-        icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
+    embed.set_footer(text="💫 Monthly conversion happens automatically on the 1st of each month",
+                     icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
 
     result, error = await safe_send(ctx, embed=embed)
     if error:
@@ -2460,7 +2463,7 @@ async def restorebackup(ctx):
 
 @bot.command()
 @safe_command_wrapper
-@commands.has_permissions(administrator=True)
+@cooldown_check('apistatus')
 async def apistatus(ctx):
     """Check API usage and rate limiting status (Admin only)"""
     try:
