@@ -417,8 +417,9 @@ def safe_command_wrapper(func):
                     "❌ An unexpected error occurred. The issue has been logged."
                 )
             except discord.DiscordException as e:
-                logger.error(f"❌ Could not send error message to user {ctx.author.id}: {e}")
-                pass# If we can't even send a simple message, just log it
+                logger.error(f"❌ Could not send error message to user {ctx.author.id}: {e}"
+                            )
+                pass  # If we can't even send a simple message, just log it
     return wrapper
 
 
@@ -490,7 +491,8 @@ async def handle_global_error(ctx, error):
             except discord.DiscordException as text_send_error:
                 # Ultimate fallback: just log it
                 logger.error(
-                    f"❌ Could not send error message to user {ctx.author.id}: {text_send_error}")
+                    f"❌ Could not send error message to user {ctx.author.id}: {text_send_error}"
+                )
                 pass
 
     except Exception as handler_error:
@@ -613,8 +615,7 @@ def init_database():
         'CREATE INDEX IF NOT EXISTS idx_users_balance ON users(balance DESC)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_users_sp ON users(sp DESC)')
     cursor.execute(
-        'CREATE INDEX IF NOT EXISTS idx_monthly_stats_month ON monthly_stats(month)'
-    )
+        'CREATE INDEX IF NOT EXISTS idx_monthly_stats_month ON monthly_stats(month)')
     cursor.execute(
         'CREATE INDEX IF NOT EXISTS idx_monthly_stats_losses ON monthly_stats(losses DESC)'
     )
@@ -966,7 +967,7 @@ def create_backup_with_cloud_storage():
             os.makedirs("backups")
 
         # Generate backup filename with timestamp
-        timestamp =datetime.datetime.now(timezone.utc).strftime("%Y-%m")
+        timestamp = datetime.datetime.now(timezone.utc).strftime("%Y-%m")
         backup_filename = f"backup_{timestamp}.db"
         backup_path = os.path.join("backups", backup_filename)
 
@@ -1407,7 +1408,7 @@ async def monthly_conversion_check():
                         guild.text_channels, name='general')
                     if not channel and guild.text_channels:
                         channel = guild.text_channels[0]
-                    
+
                     if channel and isinstance(channel, discord.TextChannel):
                         try:
                             embed = discord.Embed(
@@ -1442,8 +1443,7 @@ async def monthly_conversion_check():
 
                             await channel.send(embed=embed)
                             logger.info(
-                                f"📢 Monthly conversion announced in {guild.name}"
-                            )
+                                f"📢 Monthly conversion announced in {guild.name}")
 
                         except Exception as e:
                             logger.error(
@@ -1455,7 +1455,7 @@ async def monthly_conversion_check():
         logger.error(f"❌ Monthly conversion check error: {e}")
 
 
-# API Health monitoring
+# AP I Health monitoring
 @tasks.loop(minutes=5)
 async def api_health_monitor():
     """Monitor API usage and rate limiting status"""
@@ -1604,7 +1604,6 @@ def enhanced_health():
             "rate_limit_remaining"] = discord_rate_limiter.max_requests - len(
                 discord_rate_limiter.requests)
 
-        # Memory usage (optional - only if psutil is available)
         # Memory usage (optional - only if psutil is available)
         try:
             import psutil
