@@ -73,7 +73,6 @@ class DatabasePool:
 
 
 # Initialize pool
-DB_FILE = "bot_database.db"
 db_pool = DatabasePool(DB_FILE)
 
 # Set up logging
@@ -81,6 +80,9 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Define constants first
+DB_FILE = "bot_database.db"
 
 # Initialize placeholder variables (will be properly set later)
 bot = None
@@ -510,7 +512,6 @@ load_dotenv()
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 
 # ==== Constants ====
-DB_FILE = "bot_database.db"
 ROLE_ID_TEMP_ADMIN = 1393927331101544539  # Replace with actual ID
 ROLE_ID_HMW = 1393927051685400790  # Replace with actual HMW role ID
 ROLE_ID_ADMIN = 1397799884790169771  # Replace with actual Admin role ID
@@ -1413,57 +1414,60 @@ async def monthly_conversion_check():
                             logger.info("✅ Post-conversion backup created")
 
                 # Notify in all guilds (optional)
-                for guild in bot.guilds:
-                    # Find a general channel to announce - ensure it's a TextChannel
-                    channel = discord.utils.get(guild.text_channels,
-                                                name='general')
-                    if not channel and guild.text_channels:
-                        channel = guild.text_channels[0]
+                if bot and bot.guilds:
+                    for guild in bot.guilds:
+                        # Find a general channel to announce - ensure it's a TextChannel
+                        channel = discord.utils.get(guild.text_channels,
+                                                    name='general')
+                        if not channel and guild.text_channels:
+                            channel = guild.text_channels[0]
 
-                    if channel and isinstance(channel, discord.TextChannel):
-                        try:
-                            embed = discord.Embed(
-                                title="🌟 **MONTHLY ASCENSION COMPLETE** 🌟",
-                                description=
-                                "```css\n[SPIRIT ENERGY CRYSTALLIZATION RITUAL]\n```\n💎 *The cosmic cycle renews, power has been preserved...*",
-                                color=0x00FF7F)
+                        if channel and isinstance(channel, discord.TextChannel):
+                            try:
+                                embed = discord.Embed(
+                                    title="🌟 **MONTHLY ASCENSION COMPLETE** 🌟",
+                                    description=
+                                    "```css\n[SPIRIT ENERGY CRYSTALLIZATION RITUAL]\n```\n💎 *The cosmic cycle renews, power has been preserved...*",
+                                    color=0x00FF7F)
 
-                            embed.add_field(
-                                name="⚗️ **CONVERSION RESULTS**",
-                                value=
-                                f"```yaml\nUsers Affected: {user_count:,}\nTotal SP Converted: {total_converted:,}\nConversion Rate: 1 SP = 1 SS\n```",
-                                inline=False)
+                                embed.add_field(
+                                    name="⚗️ **CONVERSION RESULTS**",
+                                    value=
+                                    f"```yaml\nUsers Affected: {user_count:,}\nTotal SP Converted: {total_converted:,}\nConversion Rate: 1 SP = 1 SS\n```",
+                                    inline=False)
 
-                            embed.add_field(
-                                name="🔄 **WHAT HAPPENED?**",
-                                value=
-                                "```diff\n+ All Spirit Points → Spirit Stones\n+ SP reset to 100 for everyone\n+ Monthly gambling stats reset\n+ Your wealth is now permanent!\n```",
-                                inline=False)
+                                embed.add_field(
+                                    name="🔄 **WHAT HAPPENED?**",
+                                    value=
+                                    "```diff\n+ All Spirit Points → Spirit Stones\n+ SP reset to 100 for everyone\n+ Monthly gambling stats reset\n+ Your wealth is now permanent!\n```",
+                                    inline=False)
 
-                            embed.add_field(
-                                name="🚀 **NEW MONTH BEGINS**",
-                                value=
-                                "```fix\nFresh start for daily claims and gambling!\nYour converted SS is safe forever.\nTime to build your SP again!\n```",
-                                inline=False)
+                                embed.add_field(
+                                    name="🚀 **NEW MONTH BEGINS**",
+                                    value=
+                                    "```fix\nFresh start for daily claims and gambling!\nYour converted SS is safe forever.\nTime to build your SP again!\n```",
+                                    inline=False)
 
-                            embed.set_footer(
-                                text=
-                                f"💫 Monthly Conversion • {now.strftime('%B %Y')}",
-                                icon_url=guild.icon.url
-                                if guild.icon else None)
+                                embed.set_footer(
+                                    text=
+                                    f"💫 Monthly Conversion • {now.strftime('%B %Y')}",
+                                    icon_url=guild.icon.url
+                                    if guild.icon else None)
 
-                            await channel.send(embed=embed)
-                            logger.info(
-                                f"📢 Monthly conversion announced in {guild.name}"
+                                await channel.send(embed=embed)
+                                logger.info(
+                                    f"📢 Monthly conversion announced in {guild.name}"
+                                )
+
+                            except Exception as e:
+                                logger.error(
+                                    f"❌ Failed to announce in {guild.name}: {e}")
+                        else:
+                            logger.warning(
+                                f"❌ No suitable text channel found in {guild.name}"
                             )
-
-                        except Exception as e:
-                            logger.error(
-                                f"❌ Failed to announce in {guild.name}: {e}")
-                    else:
-                        logger.warning(
-                            f"❌ No suitable text channel found in {guild.name}"
-                        )
+                else:
+                    logger.warning("⚠️ Bot not ready or no guilds available for monthly conversion announcement")
 
     except Exception as e:
         logger.error(f"❌ Monthly conversion check error: {e}")
