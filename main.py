@@ -1678,7 +1678,6 @@ async def remove_expired_items():
 
 
 # ==== Bot Events ====
-# REPLACE your existing on_ready function with this enhanced version:
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
@@ -1861,11 +1860,8 @@ async def daily(ctx):
                         f"Daily claim with {role_bonus}")
 
         # Dynamic progress bar with better styling - Red to Green progression
-        streak_emojis = ['🟥', '🟥', '🟧', '🟨',
-                         '🟩']  # Red -> Orange -> Yellow -> Green
-        filled_emojis = ['🟩', '🟩', '🟩', '🟩', '🟩']  # All green when filled
-        bar = ''.join(
-            [filled_emojis[i] if i < streak else '🟥' for i in range(5)])
+        streak_emojis = ['🟥', '🟥', '🟧', '🟨', '🟩']  # Red -> Orange -> Yellow -> Green
+        bar = ''.join([streak_emojis[min(i, 4)] if i < streak else '🟥' for i in range(5)])
 
         embed = discord.Embed(
             title="⚡ **DAILY ENERGY HARVESTED** ⚡",
@@ -2341,7 +2337,7 @@ async def sendsp(ctx, member: discord.Member, amount: int):
                 "⚡ SUPREME OWNER AUTHORITY ACTIVATED ⚡\n"
                 "```\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                "*✨ The cosmic Owner channels raw spiritual energy ✨*"),
+                "*✨ The Owner channels raw spiritual energy ✨*"),
             color=0x9932CC)
 
         embed.add_field(
