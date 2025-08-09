@@ -47,6 +47,24 @@ class AsyncDatabasePool:
                     for _ in range(self.max_connections):
                         conn = await aiosqlite.connect(self.db_file, timeout=30)
                         await conn.execute("PRAGMA journal_mode=WAL")
+                        await conn.execute("PRAGMA foreign_keys=ON")
+                        await conn.commit()
+                        await self._pool.put(conn)
+                    self._initialized = True
+
+    @contextlib.asynccontextmanager
+    async def get_connection(self):
+        await self._initialize_pool()
+        conn = await self._pool.get()
+        try:
+            yield conn
+        except aiosqlite.Error as e:
+            logger.error(f"❌ Database error: {e}")
+            await conn.rollback()
+            raise
+        finally:
+            await self._pool.put(conn)
+
 
 class BotConfig:
     """Centralized configuration management"""
