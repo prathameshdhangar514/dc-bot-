@@ -981,6 +981,7 @@ def create_backup_with_cloud_storage():
 def restore_from_cloud():
     """Restore database from the most recent backup (local or GitHub)"""
     try:
+        latest_backup = None
         restored_from_github = False
 
         # Try to download latest from GitHub first
@@ -995,33 +996,38 @@ def restore_from_cloud():
         # Fallback to local backups if GitHub fails
         if not restored_from_github:
             if not os.path.exists("backups"):
-                return False
+                logger.warning("⚠️ No backup found to restore from. Creating a new database.")
+                init_database()
+                return True
 
             backup_files = [
                 f for f in os.listdir("backups")
                 if f.startswith("backup_") and f.endswith(".db")
             ]
             if not backup_files:
-                return False
+                logger.warning("⚠️ No backup found to restore from. Creating a new database.")
+                init_database()
+                return True
 
             backup_files.sort(
                 key=lambda x: os.path.getmtime(os.path.join("backups", x)),
                 reverse=True)
             latest_backup = os.path.join("backups", backup_files[0])
 
-        # Backup current database before restore
-        current_backup = f"pre_restore_backup_{datetime.datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.db"
-        shutil.copy2(DB_FILE, os.path.join("backups", current_backup))
+        # Only proceed if we have a backup to restore
+        if latest_backup:
+            # Backup current database before restore
+            current_backup = f"pre_restore_backup_{datetime.datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.db"
+            shutil.copy2(DB_FILE, os.path.join("backups", current_backup))
 
-        # Restore from backup
-        if 'latest_backup' in locals():
+            # Restore from backup
             shutil.copy2(latest_backup, DB_FILE)
-            logger.info(f"✅ Database restored from: {latest_backup}")  # Log source
+            logger.info(f"✅ Database restored from: {latest_backup}")
             return True
         else:
             logger.warning("⚠️ No backup found to restore from. Creating a new database.")
-            init_database() # Initialize a new database
-            return True # Return true since we initialized a new database.
+            init_database()
+            return True
 
 
 def log_transaction(user_id,
