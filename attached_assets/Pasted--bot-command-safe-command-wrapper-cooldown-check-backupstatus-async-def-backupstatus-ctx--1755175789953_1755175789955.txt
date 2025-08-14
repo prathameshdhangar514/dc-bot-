@@ -1,0 +1,100 @@
+@bot.command()
+@safe_command_wrapper
+@cooldown_check('backupstatus')
+async def backupstatus(ctx):
+    """Check backup status and list available backups (GitHub + Local)"""
+    embed = discord.Embed(
+        title="📊 **COSMIC BACKUP STATUS** 📊",
+        description=
+        "``````\n💾 *Examining the preservation of cosmic data...*",
+        color=0x4169E1)
+    try:
+        # GitHub backup status
+        github_backups = []
+        if github_backup:
+            success, github_files = github_backup.list_github_backups()
+            if success and github_files:
+                github_backups = github_files[:5]  # Show latest 5
+                latest_github = github_files[0]
+                embed.add_field(
+                    name="☁️ **GitHub Cloud Storage**",
+                    value=
+                    f"``````",
+                    inline=False)
+                # List GitHub backups
+                github_list = "\n".join(
+                    [f"☁️ {backup['name']}" for backup in github_backups])
+                embed.add_field(name="📋 **Recent GitHub Backups**",
+                                value=f"``````",
+                                inline=True)
+            else:
+                embed.add_field(
+                    name="☁️ **GitHub Cloud Storage**",
+                    value="``````",
+                    inline=False)
+        else:
+            embed.add_field(
+                name="☁️ **GitHub Cloud Storage**",
+                value=
+                "``````",
+                inline=False)
+        
+        # Local backup status
+        if os.path.exists("backups"):
+            backup_files = [
+                f for f in os.listdir("backups") if f.endswith(".db")
+            ]
+            backup_files.sort(
+                key=lambda x: os.path.getmtime(os.path.join("backups", x)),
+                reverse=True)
+            if backup_files:
+                latest_backup = backup_files[0]
+                latest_path = os.path.join("backups", latest_backup)
+                latest_time = datetime.datetime.fromtimestamp(
+                    os.path.getmtime(latest_path))
+                total_size = sum(
+                    os.path.getsize(os.path.join("backups", f))
+                    for f in backup_files)
+                embed.add_field(
+                    name="💾 **Local Storage**",
+                    value=
+                    f"``````",
+                    inline=True)
+                # List local backups
+                recent_local = backup_files[:5]
+                local_list = "\n".join(
+                    [f"💾 {backup}" for backup in recent_local])
+                embed.add_field(name="📋 **Recent Local Backups**",
+                                value=f"``````",
+                                inline=True)
+            else:
+                embed.add_field(name="💾 **Local Storage**",
+                                value="``````",
+                                inline=True)
+        else:
+            embed.add_field(name="💾 **Local Storage**",
+                            value="``````",
+                            inline=True)
+        
+        # Current database info
+        if os.path.exists(DB_FILE):
+            current_size = os.path.getsize(DB_FILE)
+            current_time = datetime.datetime.fromtimestamp(
+                os.path.getmtime(DB_FILE))
+            embed.add_field(
+                name="🗄️ **Current Database**",
+                value=
+                f"``````",
+                inline=False)
+    except Exception as e:
+        embed.add_field(
+            name="❌ **Error**",
+            value=
+            f"``````",
+            inline=False)
+    
+    embed.set_footer(text="💫 Regular backups ensure cosmic data preservation",
+                     icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
+    result, error = await light_safe_api_call(ctx.send, embed=embed)
+    if error:
+        logger.error(f"❌ Failed to send message: {error}")

@@ -180,11 +180,6 @@ class AsyncCircuitBreaker:
                 self.state = CircuitState.OPEN
                 logger.error("🔴 Circuit breaker OPEN - service failing")
 
-
-# Update the global circuit breaker
-api_circuit_breaker = AsyncCircuitBreaker(failure_threshold=3, timeout=120)
-
-
 class TimedCache:
 
     def __init__(self, ttl_seconds=300):  # 5 minute TTL
@@ -289,67 +284,91 @@ def check_command_cooldown(user_id, command_name):
     user_command_cooldowns[str(user_id)][command_name] = now
     return True, 0
 
+api_circuit_breaker = AsyncCircuitBreaker(failure_threshold=3, timeout=120)  # Critical functions
+light_circuit_breaker = AsyncCircuitBreaker(failure_threshold=5, timeout=30)  # Non-critical functions
 
-# REPLACE enhanced_safe_api_call function:
-async def enhanced_safe_api_call(func, *args, **kwargs):
-    """Enhanced API call with circuit breaker and exponential backoff"""
+# Core API call logic (shared by both breakers)
+async def safe_api_call_internal(func, *args, **kwargs):
+    """Internal API call logic used by both circuit breakers."""
     max_retries = 3
-    base_delay = 1  # Reduced from 2
+    base_delay = 1
 
     for attempt in range(max_retries):
         try:
-            # Acquire rate limit token first
             await discord_rate_limiter.acquire()
 
-            # Use the async circuit breaker properly
-            result = await api_circuit_breaker.call(func, *args, **kwargs)
+            if asyncio.iscoroutinefunction(func):
+                result = await func(*args, **kwargs)
+            else:
+                result = func(*args, **kwargs)
             return result, None
 
         except discord.HTTPException as e:
-            if e.status == 429:
-                # Get retry_after from Discord's response
-                retry_after = getattr(e, 'retry_after',
-                                      base_delay * (2**attempt))
-                retry_after = min(retry_after, 60)  # Max 1 minute
-                logger.warning(f"⚠️ Rate limited, waiting {retry_after:.1f}s")
-                await asyncio.sleep(retry_after)
+            if e.status == 429:  # Rate limited
+                retry_after = getattr(e, 'retry_after', base_delay * (2**attempt))
+                logger.warning(f"🔄 Rate limited, waiting {retry_after}s")
+                await asyncio.sleep(min(retry_after, 60))
                 continue
-            elif e.status >= 500:
+            elif e.status >= 500:  # Server errors
                 delay = min(base_delay * (2**attempt), 30)
-                logger.error(
-                    f"❌ Discord server error {e.status}, waiting {delay}s")
+                logger.warning(f"🔄 Server error {e.status}, retrying in {delay}s")
                 await asyncio.sleep(delay)
                 continue
-            else:
+            elif e.status == 403:  # Forbidden - don't retry
+                logger.warning(f"❌ Permission denied: {e}")
+                return None, f"Permission error: {e}"
+            else:  # Other HTTP errors
+                logger.error(f"❌ Discord API Error {e.status}: {e}")
                 return None, f"Discord API Error: {e.status}"
 
         except asyncio.TimeoutError:
             delay = min(base_delay * (2**attempt), 15)
-            logger.warning(f"⚠️ Timeout, retrying in {delay}s")
+            logger.warning(f"⏰ Timeout, retrying in {delay}s")
             await asyncio.sleep(delay)
             continue
 
         except Exception as e:
-            logger.error(f"❌ API call error: {e}")
-            if attempt == max_retries - 1:
-                return None, str(e)
-            await asyncio.sleep(base_delay * (2**attempt))
+            logger.error(f"❌ Unexpected error: {e}")
+            return None, str(e)
 
+    logger.error("❌ Max retries exceeded")
     return None, "Max retries exceeded"
 
+# Enhanced API call for CRITICAL functions
+async def enhanced_safe_api_call(func, *args, **kwargs):
+    """For critical Discord API calls that should trip main circuit breaker."""
+    try:
+        return await api_circuit_breaker.call(safe_api_call_internal, func, *args, **kwargs)
+    except Exception as e:
+        if "Circuit breaker is OPEN" in str(e):
+            logger.error("❌ API call error: Circuit breaker is OPEN - rejecting request")
+            return None, "Service temporarily unavailable"
+        logger.error(f"❌ API call failed: {e}")
+        return None, str(e)
 
+# Light API call for NON-CRITICAL functions (NEW)
+async def light_safe_api_call(func, *args, **kwargs):
+    """For non-critical Discord API calls (cooldowns, errors, notifications)."""
+    try:
+        return await light_circuit_breaker.call(safe_api_call_internal, func, *args, **kwargs)
+    except Exception as e:
+        if "Circuit breaker is OPEN" in str(e):
+            logger.warning("⚠️ Light circuit breaker open - skipping non-critical message")
+            return None, "Light breaker open"
+        logger.warning(f"⚠️ Light API call failed: {e}")
+        return None, str(e)
+
+# Updated safe_api_call wrapper
 async def safe_api_call(func, *args, **kwargs):
-    """Simple wrapper for the enhanced API call function with memory management"""
+    """Main API call function - uses critical circuit breaker."""
     now = time.time()
-
     # Clean old records to prevent memory leak (keep last 5 minutes)
     discord_api_calls[:] = [t for t in discord_api_calls if now - t < 300]
-
     # Track current API call
     discord_api_calls.append(now)
-
     result, error = await enhanced_safe_api_call(func, *args, **kwargs)
     return result, error
+
 
 
 # Command cooldown decorator
@@ -389,7 +408,7 @@ def cooldown_check(command_name=None):
                     icon_url=ctx.author.avatar.url
                     if ctx.author.avatar else None)
 
-                result, error = await safe_api_call(ctx.send, embed=embed)
+                result, error = await light_safe_api_call(ctx.send, embed=embed)
                 if error:
                     logger.error(f"❌ Failed to send cooldown message: {error}")
                 return
@@ -406,7 +425,7 @@ def cooldown_check(command_name=None):
                     "```diff\n- An error occurred while processing your command\n+ Please try again later\n```",
                     color=0xFF0000)
 
-                result, error = await safe_api_call(ctx.send, embed=embed)
+                result, error = await light_safe_api_call(ctx.send, embed=embed)
                 if error:
                     logger.error(f"❌ Failed to send error message: {error}")
 
@@ -603,45 +622,40 @@ async def safe_add_roles(member, *roles):
 async def handle_global_error(ctx, error):
     """Handle global command errors with fallback protection"""
     logger.error(f"❌ Global error in {ctx.command}: {error}")
-
     if isinstance(error, commands.CommandOnCooldown):
         return  # Already handled by cooldown system
-
     try:
         embed = discord.Embed(
             title="💥 **SYSTEM ERROR**",
             description=
-            "```diff\n- A system error occurred\n+ Our cosmic engineers have been notified\n```\n🔧 *Please try again in a few moments...*",
+            "``````\n🔧 *Please try again in a few moments...*",
             color=0xFF1744)
-
         embed.add_field(name="🆘 **Error Code**",
-                        value=f"```\n{type(error).__name__}\n```",
+                        value="``````",
                         inline=True)
-
         embed.set_footer(
             text="🛠️ If this persists, contact an administrator",
             icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
 
-        # Use a simple send without the safe_send wrapper to prevent recursion
-        try:
-            await ctx.send(embed=embed)
-        except Exception as embed_send_error:
-            # Fallback: try sending a simple text message
-            logger.error(f"❌ Error sending embed: {embed_send_error}")
-            try:
-                await ctx.send(
-                    "❌ A system error occurred. Please contact an administrator."
-                )
-            except discord.DiscordException as text_send_error:
+        # Use light_safe_api_call instead of direct ctx.send
+        result, embed_error = await light_safe_api_call(ctx.send, embed=embed)
+        if embed_error:
+            # Fallback: try sending a simple text message with light breaker
+            logger.error(f"❌ Error sending embed: {embed_error}")
+            result, text_error = await light_safe_api_call(
+                ctx.send, 
+                "❌ A system error occurred. Please contact an administrator."
+            )
+            if text_error:
                 # Ultimate fallback: just log it
                 logger.error(
-                    f"❌ Could not send error message to user {ctx.author.id}: {text_send_error}"
+                    f"❌ Could not send error message to user {ctx.author.id}: {text_error}"
                 )
-                pass
 
     except Exception as handler_error:
         # Don't let the error handler itself crash the bot
         logger.error(f"❌ Error in global error handler: {handler_error}")
+
 
 
 load_dotenv()
@@ -2536,7 +2550,7 @@ async def on_command_error(ctx, error):
         if similar:
             embed.title = "❓ **UNKNOWN COMMAND**"
             embed.description = f"```diff\n- Command not found\n+ Similar: {', '.join(similar[:3])}\n```"
-            await ctx.send(embed=embed, delete_after=10)
+            result, error = await light_safe_api_call(ctx.send, embed=embed, delete_after=10)
         return  # Don't show error for unknown commands without suggestions
 
     else:
@@ -2544,7 +2558,7 @@ async def on_command_error(ctx, error):
         embed.description = "```diff\n- An unexpected error occurred\n+ Please try again or contact support\n```"
 
     try:
-        await ctx.send(embed=embed, delete_after=15)
+        result, error = await light_safe_api_call(ctx.send, embed=embed, delete_after=15)
     except Exception as e:
         logger.exception(f"An unexpected error occurred: {e}")
         # Fallback to simple text if embed fails
@@ -2689,7 +2703,7 @@ async def forceconvert(ctx):
     """Manually trigger monthly conversion (Admin only)"""
     embed = discord.Embed(
         title="⚠️ **FORCE CONVERSION WARNING** ⚠️",
-        description=("```diff\n! MANUAL MONTHLY CONVERSION TRIGGER !\n```\n"
+        description=("``````\n"
                      "🔥 **THIS WILL:**\n"
                      "• Convert ALL users' SP to SS immediately\n"
                      "• Reset everyone's SP to 100\n"
@@ -2698,72 +2712,74 @@ async def forceconvert(ctx):
                      "React with ✅ to proceed or ❌ to cancel."),
         color=0xFF6B00)
 
-    message = await ctx.send(embed=embed)
-    await message.add_reaction("✅")
-    await message.add_reaction("❌")
+    result, error = await safe_api_call(ctx.send, embed=embed)
+    if error or result is None:
+        logger.error(f"❌ Failed to send forceconvert warning: {error}")
+        return
+    message = result
+
+    result1, error1 = await safe_api_call(message.add_reaction, "✅")
+    result2, error2 = await safe_api_call(message.add_reaction, "❌")
+    if error1 or error2:
+        logger.warning(f"❌ Failed to add reactions: {error1 or error2}")
 
     def check(reaction, user):
         return (user == ctx.author and str(reaction.emoji) in ["✅", "❌"]
                 and reaction.message.id == message.id)
-
     try:
         reaction, user = await bot.wait_for('reaction_add',
                                             timeout=30.0,
                                             check=check)
-
         if str(reaction.emoji) == "✅":
             embed = discord.Embed(
                 title="🔄 **PROCESSING CONVERSION...**",
                 description=
-                "```css\n[MANUAL CONVERSION IN PROGRESS]\n```\n⚗️ *Converting all spiritual energy to eternal stones...*",
+                "``````\n⚗️ *Converting all spiritual energy to eternal stones...*",
                 color=0xFFAA00)
-
-            await message.edit(embed=embed)
+            result, error = await safe_api_call(message.edit, embed=embed)
+            if error:
+                logger.error(f"❌ Failed to edit forceconvert message: {error}")
 
             total_converted, user_count = await perform_monthly_conversion()
-
             if total_converted > 0:
                 embed = discord.Embed(
                     title="✅ **CONVERSION COMPLETE**",
                     description=
-                    "```fix\n◆ MANUAL MONTHLY CONVERSION SUCCESSFUL ◆\n```\n💎 *All spiritual energy has been crystallized!*",
+                    "``````\n💎 *All spiritual energy has been crystallized!*",
                     color=0x00FF00)
-
                 embed.add_field(
                     name="📊 **CONVERSION STATISTICS**",
                     value=
-                    f"```yaml\nUsers Processed: {user_count:,}\nTotal SP Converted: {total_converted:,}\nConversion Rate: 1:1\nSP Reset To: 100\n```",
+                    "``````",
                     inline=False)
-
                 embed.add_field(
                     name="🔧 **ADMINISTRATOR**",
                     value=
-                    f"```ansi\n\u001b[0;36m{ctx.author.display_name}\u001b[0m\n```",
+                    "``````",
                     inline=True)
-
                 embed.set_footer(
                     text="💫 Manual conversion completed by administrator")
             else:
                 embed = discord.Embed(
                     title="ℹ️ **NO CONVERSION NEEDED**",
-                    description="```yaml\nNo users had SP to convert\n```",
+                    description="``````",
                     color=0x87CEEB)
         else:
             embed = discord.Embed(
                 title="❌ **CONVERSION CANCELLED**",
                 description=
-                "```css\n[MANUAL CONVERSION ABORTED]\n```\n🛡️ *No changes made to user balances.*",
+                "``````\n🛡️ *No changes made to user balances.*",
                 color=0x808080)
-
     except asyncio.TimeoutError:
         embed = discord.Embed(
             title="⏰ **TIMEOUT**",
             description=
-            "```css\n[CONVERSION TIMEOUT]\n```\n🕐 *No response received. Conversion cancelled.*",
+            "``````\n🕐 *No response received. Conversion cancelled.*",
             color=0x808080)
 
-    await message.edit(embed=embed)
-
+    result, error = await safe_api_call(message.edit, embed=embed)
+    if error:
+        logger.error(f"❌ Failed to edit final forceconvert message: {error}")
 
 @bot.command()
 @safe_command_wrapper
@@ -2771,7 +2787,6 @@ async def forceconvert(ctx):
 async def nextconvert(ctx):
     """Show when the next monthly conversion will happen"""
     now = datetime.datetime.now(timezone.utc)
-
     # Calculate next conversion date
     if now.day == 1 and now.hour == 0:
         next_conversion = "🔄 **HAPPENING NOW!**"
@@ -2793,48 +2808,39 @@ async def nextconvert(ctx):
                                      minute=0,
                                      second=0,
                                      microsecond=0)
-
         time_diff = next_month - now
         days = time_diff.days
         hours = time_diff.seconds // 3600
-
         next_conversion = next_month.strftime("%B 1st, %Y at 00:00 UTC")
         time_remaining = f"{days} days, {hours} hours"
-
-    embed = discord.Embed(
-        title="🗓️ **MONTHLY CONVERSION SCHEDULE** 🗓️",
-        description=
-        "```css\n[AUTOMATIC SP → SS CONVERSION]\n```\n⏰ *When the cosmic cycle completes, all energy crystallizes...*",
-        color=0x4169E1)
-
-    embed.add_field(name="📅 **NEXT CONVERSION**",
-                    value=f"```fix\n{next_conversion}\n```",
-                    inline=False)
-
-    embed.add_field(name="⏳ **TIME REMAINING**",
-                    value=f"```yaml\n{time_remaining}\n```",
-                    inline=True)
-
-    embed.add_field(
-        name="⚗️ **WHAT HAPPENS?**",
-        value=
-        "```diff\n+ All Spirit Points → Spirit Stones\n+ SP resets to 100 for everyone\n+ Monthly stats reset\n+ Automatic backup created\n```",
-        inline=False)
-
-    embed.add_field(
-        name="💡 **PRO TIP**",
-        value=
-        "```fix\nSP converts automatically - no action needed!\nYour SS balance is permanent storage.\nTime to build your SP again!\n```",
-        inline=False)
-
-    embed.set_footer(
-        text=
-        "💫 Monthly conversion happens automatically on the 1st of each month",
-        icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
-
-    result, error = await safe_send(ctx, embed=embed)
-    if error:
-        logger.error(f"❌ Failed to send message: {error}")
+        embed = discord.Embed(
+            title="🗓️ **MONTHLY CONVERSION SCHEDULE** 🗓️",
+            description=
+            f"``````\n⏰ *When the cosmic cycle completes, all energy crystallizes...*\n{f'Time remaining: {time_remaining}' if time_remaining != 'Conversion in progress...' else time_remaining}",
+            color=0x4169E1)
+        embed.add_field(name="📅 **NEXT CONVERSION**",
+                        value=next_conversion,
+                        inline=False)
+        embed.add_field(name="⏳ **TIME REMAINING**",
+                        value=time_remaining,
+                        inline=True)
+        embed.add_field(
+            name="⚗️ **WHAT HAPPENS?**",
+            value=
+            "```diff\n+ All Spirit Points → Spirit Stones\n+ SP reset to 100 for everyone\n+ Monthly gambling stats reset\n+ Your wealth is now permanent!\n```",
+            inline=False)
+        embed.add_field(
+            name="💡 **PRO TIP**",
+            value=
+            "```fix\nSave your SP for the next monthly conversion to maximize your wealth!\n```",
+            inline=False)
+        embed.set_footer(
+            text=
+            "💫 Monthly conversion happens automatically on the 1st of each month",
+            icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
+        result, error = await light_safe_api_call(ctx.send, embed=embed)
+        if error:
+            logger.error(f"❌ Failed to send message: {error}")
 
 
 @bot.command()
@@ -2939,119 +2945,104 @@ def validate_discord_input(text, max_length=2000, allow_mentions=False):
 
     return True, None
 
-
 @bot.command()
 @safe_command_wrapper
 @cooldown_check('usename')
 async def usename(ctx, member: discord.Member, *, new_nickname: str):
     """Use a name change card on someone"""
-
     # ADD INPUT VALIDATION
     is_valid, error_msg = validate_discord_input(new_nickname,
                                                  max_length=32,
                                                  allow_mentions=False)
     if not is_valid:
         embed = discord.Embed(title="❌ **INVALID NICKNAME**",
-                              description=f"```diff\n- {error_msg}\n```",
+                              description="``````",
                               color=0xFF0000)
-        return await ctx.send(embed=embed)
+        result, error = await light_safe_api_call(ctx.send, embed=embed)
+        return
 
     # Check if target has nickname lock
     if is_nickname_locked(str(member.id)):
         embed = discord.Embed(
             title="🔒 **TARGET PROTECTED**",
             description=
-            "```diff\n- Target has nickname lock active\n+ Cannot change protected nicknames\n```",
+            "``````",
             color=0xFF6347)
-        result, error = await safe_send(ctx, embed=embed)
+        result, error = await light_safe_api_call(ctx.send, embed=embed)
         return
 
     # Check nickname length and validity
     if len(new_nickname) > 32:
         embed = discord.Embed(
             title="❌ **NICKNAME TOO LONG**",
-            description="```diff\n- Maximum 32 characters allowed\n```",
+            description="``````",
             color=0xFF0000)
-        result, error = await safe_send(ctx, embed=embed)
+        result, error = await light_safe_api_call(ctx.send, embed=embed)
         return
 
     try:
         # Store original nickname
         original_nick = member.nick if member.nick else str(
             member.display_name)
-
         # Change the nickname
         await member.edit(
             nick=new_nickname,
             reason=f"Name change card used by {ctx.author.display_name}")
-
         # Deduct cost and record the change
         user_id = str(ctx.author.id)  # Add this line to get user_id
         user_data = get_user_data(user_id)  # Add this line to get user_data
         new_balance = user_data["balance"] - 10000
         await update_user_data(user_id, balance=new_balance)
-
         # Set expiry (24 hours from now)
         expires_at = (datetime.datetime.now(timezone.utc) +
                       timedelta(hours=24)).isoformat()
-
         # Record the name change
         add_name_change_card(user_id, str(member.id), original_nick,
                              new_nickname, expires_at, str(ctx.guild.id))
-
         # Log transaction
         log_transaction(user_id, "name_change_card", -10000,
                         user_data["balance"], new_balance,
                         f"Used name change card on {member.display_name}")
-
         embed = discord.Embed(
             title="🃏 **NAME CHANGE CARD ACTIVATED** 🃏",
             description=
-            "```fix\n◆ IDENTITY MANIPULATION SUCCESSFUL ◆\n```\n✨ *Reality bends to your will...*",
+            "``````\n✨ *Reality bends to your will...*",
             color=0xFF1493)
-
         embed.add_field(
             name="🎯 **TARGET**",
-            value=f"```ansi\n\u001b[0;36m{member.display_name}\u001b[0m\n```",
+            value="``````",
             inline=True)
-
         embed.add_field(
             name="🔄 **NAME CHANGE**",
-            value=f"```diff\n- {original_nick}\n+ {new_nickname}\n```",
+            value="``````",
             inline=True)
-
         embed.add_field(name="⏰ **DURATION**",
-                        value="```yaml\n24 Hours\n```",
+                        value="``````",
                         inline=True)
-
         embed.add_field(name="💸 **COST**",
-                        value="```diff\n- 10,000 Spirit Stones\n```",
+                        value="``````",
                         inline=False)
-
         embed.set_footer(
             text="🃏 Name will automatically revert after 24 hours",
             icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
-
-        result, error = await safe_send(ctx, embed=embed)
+        result, error = await safe_api_call(ctx.send, embed=embed)
         if error:
             logger.error(f"❌ Failed to send message: {error}")
-
     except discord.Forbidden:
         embed = discord.Embed(
             title="🚫 **PERMISSION DENIED**",
             description=
-            "```diff\n- Bot lacks permission to change nicknames\n+ Check bot role hierarchy\n```",
+            "``````",
             color=0xFF0000)
-        await ctx.send(embed=embed)
-
+        result, error = await light_safe_api_call(ctx.send, embed=embed)
     except Exception as e:
         logger.error(f"❌ Name change error: {e}")
         embed = discord.Embed(
             title="❌ **NAME CHANGE FAILED**",
             description=
-            "```diff\n- An error occurred\n+ Please try again later\n```",
+            "``````",
             color=0xFF0000)
-        await ctx.send(embed=embed)
+        result, error = await light_safe_api_call(ctx.send, embed=embed)
 
 
 @bot.command()
@@ -3281,7 +3272,6 @@ async def restorebackup(ctx, filename: Optional[str] = None):
 
     await message.edit(embed=embed)
 
-
 @bot.command()
 @safe_command_wrapper
 @cooldown_check('apistatus')
@@ -3289,41 +3279,34 @@ async def apistatus(ctx):
     """Check API usage and rate limiting status (Admin only)"""
     try:
         now = time.time()
-
         # Discord API stats
         api_usage = len(discord_api_calls)
         api_percentage = (api_usage / DISCORD_API_LIMIT) * 100
-
         # Active cooldowns
         active_cooldowns = sum(
             len(commands) for commands in user_command_cooldowns.values())
-
         # Most used commands in last hour
         recent_commands = defaultdict(int)
         for user_commands in user_command_cooldowns.values():
             for command, last_used in user_commands.items():
                 if now - last_used < 3600:  # Last hour
                     recent_commands[command] += 1
-
         embed = discord.Embed(
             title="📊 **API STATUS DASHBOARD** 📊",
             description=
-            "```css\n[SYSTEM PERFORMANCE ANALYSIS]\n```\n🔧 *Real-time API health monitoring...*",
+            "``````\n🔧 *Real-time API health monitoring...*",
             color=0x00FF7F if api_percentage < 80 else
             0xFFB347 if api_percentage < 95 else 0xFF0000)
-
         embed.add_field(
             name="🌐 **Discord API Usage**",
             value=
-            f"```yaml\nCalls: {api_usage}/{DISCORD_API_LIMIT}\nUsage: {api_percentage:.1f}%\nWindow: {API_WINDOW}s\nStatus: {'🟢 Healthy' if api_percentage < 80 else '🟡 Busy' if api_percentage < 95 else '🔴 Critical'}\n```",
+            f"``````",
             inline=False)
-
         embed.add_field(
             name="⏰ **Command Cooldowns**",
             value=
-            f"```yaml\nActive Cooldowns: {active_cooldowns}\nUsers Affected: {len(user_command_cooldowns)}\n```",
+            f"```yaml\nActive Cooldowns: {active_cooldowns}\n```",
             inline=True)
-
         if recent_commands:
             top_commands = sorted(recent_commands.items(),
                                   key=lambda x: x[1],
@@ -3331,21 +3314,17 @@ async def apistatus(ctx):
             command_list = "\n".join(
                 [f"{cmd}: {count}" for cmd, count in top_commands])
             embed.add_field(name="📈 **Popular Commands (1h)**",
-                            value=f"```\n{command_list}\n```",
+                            value=f"```yaml\n{command_list}\n```",
                             inline=True)
-
         embed.set_footer(
             text="🔄 Updates every 5 minutes • API monitoring active",
             icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
-
-        result, error = await safe_send(ctx, embed=embed)
+        result, error = await light_safe_api_call(ctx.send, embed=embed)
         if error:
-            await ctx.send(f"❌ Error displaying API status: {error}")
-
+            result, err = await light_safe_api_call(ctx.send, f"❌ Error displaying API status: {error}")
     except Exception as e:
         logger.error(f"❌ API status command error: {e}")
-        await ctx.send("❌ Failed to retrieve API status.")
-
+        result, err = await light_safe_api_call(ctx.send, "❌ Failed to retrieve API status.")
 
 @bot.command()
 @safe_command_wrapper
@@ -3355,9 +3334,8 @@ async def backupstatus(ctx):
     embed = discord.Embed(
         title="📊 **COSMIC BACKUP STATUS** 📊",
         description=
-        "```css\n[BACKUP VAULT ANALYSIS]\n```\n💾 *Examining the preservation of cosmic data...*",
+        "``````\n💾 *Examining the preservation of cosmic data...*",
         color=0x4169E1)
-
     try:
         # GitHub backup status
         github_backups = []
@@ -3365,30 +3343,28 @@ async def backupstatus(ctx):
             success, github_files = github_backup.list_github_backups()
             if success and github_files:
                 github_backups = github_files[:5]  # Show latest 5
-
                 latest_github = github_files[0]
                 embed.add_field(
                     name="☁️ **GitHub Cloud Storage**",
                     value=
-                    f"```yaml\nStatus: ✅ Connected\nLatest: {latest_github['name']}\nTotal Files: {len(github_files)}\nRepository: {GITHUB_BACKUP_REPO}\n```",
+                    f"``````",
                     inline=False)
-
                 # List GitHub backups
                 github_list = "\n".join(
                     [f"☁️ {backup['name']}" for backup in github_backups])
                 embed.add_field(name="📋 **Recent GitHub Backups**",
-                                value=f"```\n{github_list}\n```",
+                                value=f"``````",
                                 inline=True)
             else:
                 embed.add_field(
                     name="☁️ **GitHub Cloud Storage**",
-                    value="```diff\n- ❌ Connection failed or no backups\n```",
+                    value="``````",
                     inline=False)
         else:
             embed.add_field(
                 name="☁️ **GitHub Cloud Storage**",
                 value=
-                "```diff\n- ❌ Not configured\n+ Set GITHUB_TOKEN and GITHUB_BACKUP_REPO\n```",
+                "``````",
                 inline=False)
 
         # Local backup status
@@ -3399,7 +3375,6 @@ async def backupstatus(ctx):
             backup_files.sort(
                 key=lambda x: os.path.getmtime(os.path.join("backups", x)),
                 reverse=True)
-
             if backup_files:
                 latest_backup = backup_files[0]
                 latest_path = os.path.join("backups", latest_backup)
@@ -3408,27 +3383,25 @@ async def backupstatus(ctx):
                 total_size = sum(
                     os.path.getsize(os.path.join("backups", f))
                     for f in backup_files)
-
                 embed.add_field(
                     name="💾 **Local Storage**",
                     value=
-                    f"```yaml\nLatest: {latest_backup}\nCreated: {latest_time.strftime('%Y-%m-%d %H:%M:%S')}\nFiles: {len(backup_files)}\nTotal Size: {total_size:,} bytes\n```",
+                    f"``````",
                     inline=True)
-
                 # List local backups
                 recent_local = backup_files[:5]
                 local_list = "\n".join(
                     [f"💾 {backup}" for backup in recent_local])
                 embed.add_field(name="📋 **Recent Local Backups**",
-                                value=f"```\n{local_list}\n```",
+                                value=f"``````",
                                 inline=True)
             else:
                 embed.add_field(name="💾 **Local Storage**",
-                                value="```diff\n- No local backups found\n```",
+                                value="``````",
                                 inline=True)
         else:
             embed.add_field(name="💾 **Local Storage**",
-                            value="```diff\n- Backup directory not found\n```",
+                            value="``````",
                             inline=True)
 
         # Current database info
@@ -3436,26 +3409,24 @@ async def backupstatus(ctx):
             current_size = os.path.getsize(DB_FILE)
             current_time = datetime.datetime.fromtimestamp(
                 os.path.getmtime(DB_FILE))
-
             embed.add_field(
                 name="🗄️ **Current Database**",
                 value=
-                f"```yaml\nFile: {DB_FILE}\nModified: {current_time.strftime('%Y-%m-%d %H:%M:%S')}\nSize: {current_size:,} bytes\n```",
+                "``````",
                 inline=False)
-
     except Exception as e:
         embed.add_field(
             name="❌ **Error**",
             value=
-            f"```diff\n- Failed to check backup status\n- Error: {str(e)[:100]}...\n```",
+            "``````",
             inline=False)
 
     embed.set_footer(text="💫 Regular backups ensure cosmic data preservation",
                      icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
-
-    result, error = await safe_send(ctx, embed=embed)
+    result, error = await light_safe_api_call(ctx.send, embed=embed)
     if error:
         logger.error(f"❌ Failed to send message: {error}")
+
 
 
 @bot.command()
