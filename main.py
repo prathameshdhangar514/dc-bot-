@@ -2591,14 +2591,11 @@ async def daily(ctx):
         user_id = str(ctx.author.id)
         now = datetime.datetime.now(timezone.utc)
         user_data = get_user_data(user_id)
-
         last_claim = user_data.get("last_claim")
         streak = user_data.get("streak", 0)
         base_reward = 300
-
         # Check user roles by ID and set reward accordingly
         user_role_ids = [role.id for role in ctx.author.roles]
-
         if ROLE_ID_ADMIN in user_role_ids:
             base_reward = 400
             role_bonus = "👑 **ADMIN BLESSING** (+100 SP)"
@@ -2610,7 +2607,6 @@ async def daily(ctx):
             role_bonus = "💎 **BOOSTER BONUS** (+50 SP)"
         else:
             role_bonus = "🔰 **STANDARD RATE**"
-
         if last_claim:
             # FIX: Ensure last_time is timezone-aware
             try:
@@ -2623,78 +2619,66 @@ async def daily(ctx):
                 last_time = datetime.datetime.strptime(last_claim,
                                                        "%Y-%m-%d %H:%M:%S.%f")
                 last_time = last_time.replace(tzinfo=timezone.utc)
-
             delta = (now - last_time).days
             if delta == 0:
                 remaining = 24 - (now - last_time).seconds // 3600
                 embed = discord.Embed(
                     title="⏰ **TEMPORAL LOCK ACTIVE**",
                     description=
-                    f"```diff\n- ENERGY RESERVES DEPLETED\n+ Regeneration in {remaining}h\n```\n🌟 *The cosmic energy needs time to flow through your soul...*",
+                    f"``````\n🌟 *The cosmic energy needs time to flow through your soul...*",
                     color=0x2B2D42)
                 embed.set_footer(text="⚡ Daily energy recharging...",
                                  icon_url=ctx.author.avatar.url
                                  if ctx.author.avatar else None)
-                return await ctx.send(embed=embed)
+                result, error = await light_safe_api_call(ctx.send, embed=embed)
+                return
             elif delta == 1:
                 streak += 1
             else:
                 streak = 1
         else:
             streak = 1
-
         reward = base_reward * 2 if streak == 5 else base_reward
         if streak == 5:
             streak = 0
-
         # Update user data
         old_sp = user_data.get('sp', 0)
         new_sp = old_sp + reward
-
         await safe_update_user_data(user_id,
                                     sp=new_sp,
                                     last_claim=now.isoformat(),
                                     streak=streak)
-
         # Log transaction
         log_transaction(user_id, "daily_claim", reward, old_sp, new_sp,
                         f"Daily claim with {role_bonus}")
-
         # Progress bar: green for completed streak days, red for remaining
         bar = ''.join(['🟩' if i < streak else '🟥' for i in range(5)])
-
         embed = discord.Embed(
             title="⚡ **DAILY ENERGY HARVESTED** ⚡",
             description=
-            "```css\n[SPIRITUAL ENERGY CHANNELING COMPLETE]\n```\n💫 *The universe grants you its power...*",
+            "``````\n💫 *The universe grants you its power...*",
             color=0x8A2BE2 if streak >= 3 else 0x4169E1)
-
         embed.add_field(
             name="🎁 **REWARDS CLAIMED**",
-            value=f"```diff\n+ {reward:,} Spirit Points\n```\n{role_bonus}",
+            value=f"``````\n{role_bonus}",
             inline=False)
-
         embed.add_field(
             name="🔥 **STREAK PROGRESSION**",
             value=
             f"{bar} `{streak}/5`\n{'🌟 *STREAK BONUS ACTIVE!*' if streak >= 3 else '💪 *Keep the momentum going!*'}",
             inline=False)
-
         embed.set_thumbnail(
             url=ctx.author.avatar.url if ctx.author.avatar else None)
         embed.set_footer(
             text=
             f"⚡ Next claim available in 24 hours • {ctx.author.display_name}",
             icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
-
-        result, error = await safe_send(ctx, embed=embed)
+        result, error = await safe_api_call(ctx.send, embed=embed)
         if error:
             logger.error(f"❌ Failed to send message: {error}")
-
     except Exception as e:
         logger.error(f"❌ Daily command error: {e}")
-        await ctx.send("❌ An error occurred while processing your daily claim."
-                       )
+        result, error = await light_safe_api_call(ctx.send, "❌ An error occurred while processing your daily claim.")
 
 
 @bot.command()
@@ -2842,7 +2826,6 @@ async def nextconvert(ctx):
         if error:
             logger.error(f"❌ Failed to send message: {error}")
 
-
 @bot.command()
 @safe_command_wrapper
 @cooldown_check('cloudbackup')
@@ -2851,98 +2834,93 @@ async def cloudbackup(ctx):
     embed = discord.Embed(
         title="☁️ **Creating Cloud Backup...**",
         description=
-        "```css\n[SPIRITUAL DATABASE PRESERVATION RITUAL]\n```\n💾 *Crystallizing the cosmic data into eternal storage...*",
+        "``````\n💾 *Crystallizing the cosmic data into eternal storage...*",
         color=0x00FFAA)
 
-    message = await ctx.send(embed=embed)
+    result, error = await safe_api_call(ctx.send, embed=embed)
+    if error or result is None:
+        logger.error(f"❌ Failed to send cloudbackup message: {error}")
+        return
+    message = result
 
     try:
         # Create local backup first
         backup_file = create_backup_with_cloud_storage()
-
         if backup_file:
             # Try to upload to GitHub
             github_success = False
             github_error = "Not configured"
-
             if github_backup:
                 # Update embed to show GitHub upload in progress
-                embed.description = "```css\n[UPLOADING TO GITHUB CLOUD STORAGE]\n```\n☁️ *Transferring cosmic data to the eternal vault...*"
-                await message.edit(embed=embed)
+                embed.description = "``````\n☁️ *Transferring cosmic data to the eternal vault...*"
+                result, error = await safe_api_call(message.edit, embed=embed)
+                if error:
+                    logger.error(f"❌ Failed to edit cloudbackup progress message: {error}")
 
-                success, result = github_backup.upload_backup_to_github(
-                    backup_file)
+                success, result_msg = github_backup.upload_backup_to_github(backup_file)
                 if success:
                     github_success = True
                 else:
-                    github_error = result
+                    github_error = result_msg
 
             # Create final success embed
             embed = discord.Embed(
                 title="✅ **Cloud Backup Created**",
                 description=
-                "```fix\n◆ COSMIC DATA PRESERVATION COMPLETE ◆\n```\n💎 *Database backup created and processed!*",
+                "``````\n💎 *Database backup created and processed!*",
                 color=0x00FF00)
 
             embed.add_field(
                 name="📁 **Local File**",
-                value=f"```yaml\n💾 {os.path.basename(backup_file)}\n```",
+                value=f"``````",
                 inline=True)
 
             # GitHub status
             if github_success:
                 embed.add_field(name="☁️ **GitHub Cloud**",
-                                value="```diff\n+ ✅ Uploaded to GitHub\n```",
+                                value="``````",
                                 inline=True)
             else:
                 embed.add_field(
                     name="☁️ **GitHub Cloud**",
-                    value=
-                    f"```diff\n- ❌ Upload failed\n- {github_error[:50]}...\n```",
+                    value=f"``````",
                     inline=True)
 
             # Database statistics
             file_size = os.path.getsize(backup_file)
             embed.add_field(
                 name="📊 **Backup Statistics**",
-                value=
-                f"```yaml\nTables Backed Up: 5\nFile Size: {file_size:,} bytes\nTimestamp: {datetime.datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC\nLocation: {'GitHub + Local' if github_success else 'Local Only'}\n```",
+                value=f"``````",
                 inline=False)
-
             embed.set_footer(
-                text=
-                "💫 Your cosmic data is now safely preserved in the eternal vault",
+                text="💫 Your cosmic data is now safely preserved in the eternal vault",
                 icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
         else:
             embed = discord.Embed(
                 title="❌ **Backup Failed**",
                 description=
-                "```diff\n- COSMIC ERROR DETECTED\n```\n💀 *Failed to create backup. Check logs for details.*",
+                "``````\n💀 *Failed to create backup. Check logs for details.*",
                 color=0xFF0000)
-
     except Exception as e:
         embed = discord.Embed(
             title="❌ **Backup Error**",
             description=
-            f"```diff\n- RITUAL INTERRUPTED\n```\n💀 *An error occurred: {str(e)[:100]}...*",
+            f"``````\n💀 *An error occurred: {str(e)[:100]}...*",
             color=0xFF0000)
 
-    await message.edit(embed=embed)
-
+    result, error = await safe_api_call(message.edit, embed=embed)
+    if error:
+        logger.error(f"❌ Failed to edit final cloudbackup message: {error}")
 
 def validate_discord_input(text, max_length=2000, allow_mentions=False):
     """Validates Discord input to prevent common issues."""
     if not isinstance(text, str):
         return False, "Input must be a string."
-
     if len(text) > max_length:
         return False, f"Input exceeds maximum length of {max_length} characters."
-
     if not allow_mentions and ("@" in text or "<@!" in text or "<@" in text):
         return False, "Mentions are not allowed in this input."
-
     # Add more checks as needed (e.g., profanity filter, disallowed characters)
-
     return True, None
 
 @bot.command()
@@ -3057,41 +3035,36 @@ async def sendsp(ctx, member: discord.Member, amount: int):
             embed = discord.Embed(
                 title="👑 **OWNER ACCESS REQUIRED** 👑",
                 description=(
-                    "```diff\n"
-                    "- COSMIC AUTHORITY INSUFFICIENT\n"
-                    "- Only the realm Owner may grant Spirit Points\n"
-                    "```\n"
+                    "``````\n"
                     "⚡ *This power belongs to the supreme ruler alone...*"),
                 color=0xFF0000)
-            return await ctx.send(embed=embed)
+            result, error = await light_safe_api_call(ctx.send, embed=embed)
+            return
 
         # Validate amount
         if amount <= 0:
             embed = discord.Embed(
                 title="❌ **INVALID AMOUNT** ❌",
-                description=("```diff\n"
-                             "- ERROR: Amount must be positive\n"
-                             "+ Enter a valid positive number\n"
-                             "```"),
+                description=("``````"),
                 color=0xFF4500)
-            return await ctx.send(embed=embed)
+            result, error = await light_safe_api_call(ctx.send, embed=embed)
+            return
 
         if amount > 1000000:
             embed = discord.Embed(
                 title="⚠️ **AMOUNT TOO LARGE** ⚠️",
-                description=("```diff\n"
-                             "- ERROR: Amount exceeds maximum limit\n"
-                             "+ Maximum: 1,000,000 SP per transaction\n"
-                             "```"),
+                description=("``````"),
                 color=0xFF4500)
-            return await ctx.send(embed=embed)
+            result, error = await light_safe_api_call(ctx.send, embed=embed)
+            return
 
         if member.bot:
             embed = discord.Embed(
                 title="🤖 **INVALID TARGET** 🤖",
-                description="```diff\n- Cannot grant SP to bots\n```",
+                description="``````",
                 color=0xFF4500)
-            return await ctx.send(embed=embed)
+            result, error = await light_safe_api_call(ctx.send, embed=embed)
+            return
 
         # Get receiver data
         receiver_id = str(member.id)
@@ -3101,14 +3074,14 @@ async def sendsp(ctx, member: discord.Member, amount: int):
 
         # Update receiver's SP - FIXED: Use await
         success = await update_user_data(receiver_id, sp=new_sp)
-
         if not success:
             embed = discord.Embed(
                 title="❌ **DATABASE ERROR** ❌",
                 description=
-                "```diff\n- Failed to update user data\n- Please try again later\n```",
+                "``````",
                 color=0xFF0000)
-            return await ctx.send(embed=embed)
+            result, error = await light_safe_api_call(ctx.send, embed=embed)
+            return
 
         # Log transaction - Make this async too if needed
         log_transaction(receiver_id, "owner_sp_grant", amount, old_sp, new_sp,
@@ -3117,48 +3090,39 @@ async def sendsp(ctx, member: discord.Member, amount: int):
         # Success embed
         embed = discord.Embed(
             title="👑 **DIVINE SP BLESSING GRANTED** 👑",
-            description=("```fix\n"
-                         "⚡ SUPREME OWNER AUTHORITY ACTIVATED ⚡\n"
-                         "```\n"
+            description=("``````\n"
                          "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                          "*✨ The Owner channels raw spiritual energy ✨*"),
             color=0x9932CC)
-
         embed.add_field(
             name="👑 **SUPREME OWNER**",
             value=
-            f"```ansi\n\u001b[0;35m{ctx.author.display_name}\u001b[0m\n```",
+            f"``````",
             inline=True)
-
         embed.add_field(
             name="🎯 **BLESSED RECIPIENT**",
-            value=f"```ansi\n\u001b[0;36m{member.display_name}\u001b[0m\n```",
+            value=f"``````",
             inline=True)
-
         embed.add_field(name="⚡ **SPIRIT POINTS GRANTED**",
-                        value=f"```yaml\n⚡ +{amount:,} Spirit Points\n```",
+                        value=f"``````",
                         inline=False)
-
         embed.add_field(name="🔋 **NEW SP BALANCE**",
-                        value=f"```fix\n⚡ {new_sp:,} SP\n```",
+                        value=f"``````",
                         inline=False)
-
         embed.set_footer(
             text="👑 Supreme Owner Privilege • Spirit Point Grant System",
             icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
         embed.timestamp = datetime.datetime.now(timezone.utc)
-
-        result, error = await safe_send(ctx, embed=embed)
+        result, error = await safe_api_call(ctx.send, embed=embed)
         if error:
             logger.error(f"❌ Failed to send message: {error}")
-
     except Exception as e:
         logger.error(f"❌ Error in sendsp command: {e}")
         error_embed = discord.Embed(
             title="❌ **SYSTEM ERROR** ❌",
-            description="```diff\n- An unexpected error occurred\n```",
+            description="``````",
             color=0xFF0000)
-        await ctx.send(embed=error_embed)
+        result, error = await light_safe_api_call(ctx.send, embed=error_embed)
 
 
 @bot.command()
@@ -3427,8 +3391,6 @@ async def backupstatus(ctx):
     if error:
         logger.error(f"❌ Failed to send message: {error}")
 
-
-
 @bot.command()
 @safe_command_wrapper
 @cooldown_check('ssbal')
@@ -3437,7 +3399,6 @@ async def ssbal(ctx, member: Optional[discord.Member] = None):
     user_id = str(user.id)
     user_data = get_user_data(user_id)
     balance = user_data.get("balance", 0)
-
     # Wealth tier determination
     if balance >= 100000:
         tier = "🏆 **LEGEND**"
@@ -3454,25 +3415,20 @@ async def ssbal(ctx, member: Optional[discord.Member] = None):
     else:
         tier = "🔰 **BEGINNER**"
         tier_color = 0x708090
-
     embed = discord.Embed(
         title=f"💰 **{user.display_name.upper()}'S TREASURY** 💰",
         description=
-        f"```css\n[SPIRITUAL WEALTH ANALYSIS]\n```\n{tier} • *The crystallized power of ages...*",
+        f"``````\n{tier} • *The crystallized power of ages...*",
         color=tier_color)
-
     embed.add_field(name="💎 **SPIRIT STONES**",
-                    value=f"```fix\n{balance:,} SS\n```",
-                    inline=True)
-
+        value="``````",  # Add actual balance
+        inline=True)
     embed.set_thumbnail(url=user.avatar.url if user.avatar else None)
     embed.set_footer(
         text=f"💫 Wealth transcends mortal understanding • ID: {user.id}")
-
-    result, error = await safe_send(ctx, embed=embed)
+    result, error = await light_safe_api_call(ctx.send, embed=embed)
     if error:
         logger.error(f"❌ Failed to send message: {error}")
-
 
 @bot.command()
 @safe_command_wrapper
@@ -3482,7 +3438,6 @@ async def spbal(ctx, member: Optional[discord.Member] = None):
     user_id = str(user.id)
     user_data = get_user_data(user_id)
     sp = user_data.get("sp", 0)
-
     # Energy tier determination
     if sp >= 50000:
         energy_tier = "⚡ **STORM**"
@@ -3499,31 +3454,25 @@ async def spbal(ctx, member: Optional[discord.Member] = None):
     else:
         energy_tier = "✨ **SPARK**"
         energy_color = 0x20B2AA
-
     embed = discord.Embed(
         title=f"⚡ **{user.display_name.upper()}'S ENERGY CORE** ⚡",
         description=
-        f"```diff\n+ SPIRITUAL POWER ANALYSIS +\n```\n{energy_tier} • *Raw energy flows through your essence...*",
+        f"``````\n{energy_tier} • *Raw energy flows through your essence...*",
         color=energy_color)
-
     embed.add_field(name="⚡ **SPIRIT POINTS**",
-                    value=f"```css\n{sp:,} SP\n```",
+                    value="``````",
                     inline=True)
-
     embed.add_field(
         name="🔋 **ENERGY FLOW**",
         value=
-        f"```\n{'▰' * (min(sp, 10000) * 15 // 10000)}{'▱' * (15 - (min(sp, 10000) * 15 // 10000))}\n```",
+        "``````",
         inline=False)
-
     embed.set_thumbnail(url=user.avatar.url if user.avatar else None)
     embed.set_footer(
         text=f"🌊 Energy is the source of all creation • {user.display_name}")
-
-    result, error = await safe_send(ctx, embed=embed)
+    result, error = await light_safe_api_call(ctx.send, embed=embed)
     if error:
         logger.error(f"❌ Failed to send message: {error}")
-
 
 @bot.command()
 @safe_command_wrapper
@@ -3531,7 +3480,6 @@ async def spbal(ctx, member: Optional[discord.Member] = None):
 async def exchange(ctx, amount: str):
     user_id = str(ctx.author.id)
     user_data = get_user_data(user_id)
-
     if amount.lower() == "all":
         exchange_amount = user_data.get("sp", 0)
     else:
@@ -3541,56 +3489,48 @@ async def exchange(ctx, amount: str):
             embed = discord.Embed(
                 title="❌ **INVALID INPUT**",
                 description=
-                "```diff\n- ERROR: Invalid amount detected\n+ Use: !exchange <number> or 'all'\n```",
+                "``````",
                 color=0xFF0000)
-            return await ctx.send(embed=embed)
-
+            result, error = await light_safe_api_call(ctx.send, embed=embed)
+            return
     if exchange_amount <= 0 or exchange_amount > user_data.get("sp", 0):
         embed = discord.Embed(
             title="🚫 **INSUFFICIENT ENERGY**",
             description=
-            "```css\n[TRANSACTION BLOCKED]\n```\n💔 *Your spiritual energy reserves are inadequate for this conversion...*",
+            "``````\n💔 *Your spiritual energy reserves are inadequate for this conversion...*",
             color=0xFF4500)
-        return await ctx.send(embed=embed)
-
+        result, error = await light_safe_api_call(ctx.send, embed=embed)
+        return
     # Update balances
     old_sp = user_data.get('sp', 0)
     old_balance = user_data.get('balance', 0)
     new_sp = old_sp - exchange_amount
     new_balance = old_balance + exchange_amount
-
     await update_user_data(user_id, balance=new_balance, sp=new_sp)
-
     # Log transaction
     log_transaction(user_id, "exchange", exchange_amount, old_balance,
                     new_balance, f"Exchanged {exchange_amount} SP to SS")
-
     embed = discord.Embed(
         title="🔄 **ENERGY TRANSMUTATION COMPLETE** 🔄",
         description=
-        "```fix\n◆ SPIRITUAL ALCHEMY SUCCESSFUL ◆\n```\n✨ *Energy crystallizes into eternal stone...*",
+        "``````\n✨ *Energy crystallizes into eternal stone...*",
         color=0x9932CC)
-
     embed.add_field(
         name="⚗️ **CONVERSION RESULT**",
         value=
-        f"```diff\n- {exchange_amount:,} Spirit Points\n+ {exchange_amount:,} Spirit Stones\n```",
+        "``````",
         inline=False)
-
     embed.add_field(
         name="📊 **UPDATED RESERVES**",
         value=
-        f"```yaml\nSP Remaining: {new_sp:,}\nSS Balance: {new_balance:,}\n```",
+        "``````",
         inline=False)
-
     embed.set_footer(
         text="⚡ Perfect 1:1 conversion rate achieved",
         icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
-
-    result, error = await safe_send(ctx, embed=embed)
+    result, error = await safe_api_call(ctx.send, embed=embed)
     if error:
         logger.error(f"❌ Failed to send message: {error}")
-
 
 @bot.command()
 @safe_command_wrapper
@@ -3599,117 +3539,97 @@ async def coinflip(ctx, guess: str, amount: str):
     now = datetime.datetime.now(timezone.utc)
     user_id = str(ctx.author.id)
     guess = guess.lower()
-
     if guess not in ["heads", "tails"]:
         embed = discord.Embed(
             title="⚠️ **INVALID PREDICTION**",
             description=
-            "```diff\n- COSMIC ERROR DETECTED\n+ Valid options: 'heads' or 'tails'\n```\n🎯 *Choose your fate wisely, mortal...*",
+            "``````\n🎯 *Choose your fate wisely, mortal...*",
             color=0xFF6347)
-        return await ctx.send(embed=embed)
-
+        result, error = await light_safe_api_call(ctx.send, embed=embed)
+        return
     user_data = get_user_data(user_id)
     sp = user_data.get("sp", 0)
-
     if user_id in last_gamble_times and (
             now - last_gamble_times[user_id]).total_seconds() < 60:
         embed = discord.Embed(
             title="⏳ **COSMIC COOLDOWN**",
             description=
-            "```css\n[FATE ENERGY RECHARGING]\n```\n🌌 *The universe needs time to align the cosmic forces...*",
+            "``````\n🌌 *The universe needs time to align the cosmic forces...*",
             color=0x4682B4)
         embed.set_footer(
             text="⚡ Gambling cooldown: 60 seconds between attempts")
-        result, error = await safe_send(ctx, embed=embed)
+        result, error = await light_safe_api_call(ctx.send, embed=embed)
         return
-
     validated_amount = validate_amount(amount, 20000)
     if validated_amount is None:
         embed = discord.Embed(
             title="💸 **INVALID WAGER**",
             description=
-            "```diff\n- BETTING ERROR\n+ Enter a valid number or 'all'\n```",
+            "``````",
             color=0xFF0000)
-        result, error = await safe_send(ctx, embed=embed)
+        result, error = await light_safe_api_call(ctx.send, embed=embed)
         return
-
     if validated_amount == "all":
         bet = min(sp, 20000)
     else:
         bet = validated_amount
-
     if bet <= 0 or bet > 20000 or bet > sp:
         embed = discord.Embed(
             title="🚫 **WAGER REJECTED**",
             description=
-            "```css\n[INSUFFICIENT FUNDS OR LIMIT EXCEEDED]\n```\n💰 *Maximum bet: 20,000 SP*\n⚡ *Current SP: {:,}*"
+            "``````\n💰 *Maximum bet: 20,000 SP*\n⚡ *Current SP: {:,}*"
             .format(sp),
             color=0xFF4500)
-        result, error = await safe_send(ctx, embed=embed)
+        result, error = await light_safe_api_call(ctx.send, embed=embed)
         return
-
     flip = random.choice(["heads", "tails"])
     won = (flip == guess)
-
     if won:
         new_sp = sp + bet
         await update_user_data(user_id, sp=new_sp)
-
         update_monthly_stats(user_id, win_amount=bet)
         log_transaction(user_id, "gambling_win", bet, sp, new_sp,
                         f"Coinflip win: {flip}")
-
         embed = discord.Embed(
             title="🎉 **FATE SMILES UPON YOU** 🎉",
             description=
-            f"```diff\n+ COSMIC VICTORY ACHIEVED +\n```\n🪙 *The coin reveals: **{flip.upper()}***\n✨ *Fortune flows through your spirit...*",
+            f"``````\n🪙 *The coin reveals: **{flip.upper()}***\n✨ *Fortune flows through your spirit...*",
             color=0x00FF00)
-
         embed.add_field(name="🏆 **VICTORY SPOILS**",
-                        value=f"```css\n+{bet:,} Spirit Points\n```",
+                        value="``````",
                         inline=True)
-
         embed.add_field(name="💰 **NEW BALANCE**",
-                        value=f"```fix\n{new_sp:,} SP\n```",
+                        value="``````",
                         inline=True)
     else:
         new_sp = sp - bet
         await update_user_data(user_id, sp=new_sp)
-
         update_monthly_stats(user_id, loss_amount=bet)
         log_transaction(user_id, "gambling_loss", -bet, sp, new_sp,
                         f"Coinflip loss: {flip}")
-
         embed = discord.Embed(
             title="💀 **THE VOID CLAIMS ITS DUE** 💀",
             description=
-            f"```diff\n- COSMIC DEFEAT ENDURED -\n```\n🪙 *The coin reveals: **{flip.upper()}***\n🌑 *Your greed feeds the endless darkness...*",
+            f"``````\n🪙 *The coin reveals: **{flip.upper()}***\n🌑 *Your greed feeds the endless darkness...*",
             color=0xFF0000)
-
         embed.add_field(name="💸 **LOSSES SUFFERED**",
-                        value=f"```css\n-{bet:,} Spirit Points\n```",
+                        value="``````",
                         inline=True)
-
         embed.add_field(name="💔 **REMAINING BALANCE**",
-                        value=f"```fix\n{new_sp:,} SP\n```",
+                        value="``````",
                         inline=True)
-
     last_gamble_times[user_id] = now
-
     embed.add_field(
         name="🎯 **PREDICTION vs REALITY**",
         value=
-        f"```yaml\nYour Guess: {guess.title()}\nActual Result: {flip.title()}\nOutcome: {'WIN' if won else 'LOSS'}\n```",
+        "``````",
         inline=False)
-
     embed.set_footer(
         text="🎰 The cosmic coin never lies • Gamble responsibly",
         icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
-
-    result, error = await safe_send(ctx, embed=embed)
+    result, error = await safe_api_call(ctx.send, embed=embed)
     if error:
         logger.error(f"❌ Failed to send message: {error}")
-
 
 @bot.command()
 @safe_command_wrapper
@@ -3718,33 +3638,27 @@ async def shop(ctx):
     embed = discord.Embed(
         title="🏪 **GU CHANG'S MYSTICAL EMPORIUM** 🏪",
         description=
-        "```css\n[LEGENDARY ARTIFACTS AWAIT]\n```\n✨ *Only the worthy may claim these treasures of power...*",
+        "``````\n✨ *Only the worthy may claim these treasures of power...*",
         color=0xFF6B35)
-
     for index, (item, details) in enumerate(SHOP_ITEMS.items(),
                                             start=1):  # Changed here
         item_name = item.replace('_', ' ').title()
-
         embed.add_field(
             name=
             f"{index}. {details['desc'].split()[0]} **{item_name.upper()}**",  # Changed here
             value=
-            f"```yaml\nPrice: {details['price']:,} Spirit Stones\n```\n*{details['desc'][2:]}*",
+            f"``````\n*{details['desc'][2:]}*",
             inline=True)
-
     embed.add_field(
         name="💳 **PURCHASE INSTRUCTIONS**",
         value=
-        "```fix\n!buy <item_number>\n```\n🛒 *Use the command above to claim your artifact*",
+        "``````\n🛒 *Use the command above to claim your artifact*",
         inline=False)
-
     embed.set_footer(text="⚡ Spiritual artifacts enhance your cosmic journey",
                      icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
-
-    result, error = await safe_send(ctx, embed=embed)
+    result, error = await light_safe_api_call(ctx.send, embed=embed)
     if error:
         logger.error(f"❌ Failed to send message: {error}")
-
 
 @bot.command()
 @safe_command_wrapper
@@ -3752,7 +3666,6 @@ async def shop(ctx):
 async def buy(ctx, item_number: int):
     user_id = str(ctx.author.id)
     user_data = get_user_data(user_id)
-
     item_list = list(SHOP_ITEMS.keys())  # Extract item list again
     if item_number < 1 or item_number > len(
             item_list):  # Check if the number is valid
@@ -3761,24 +3674,23 @@ async def buy(ctx, item_number: int):
         embed = discord.Embed(
             title="❌ **ARTIFACT NOT FOUND**",
             description=
-            f"```diff\n- UNKNOWN ITEM REQUESTED\n```\n🔍 **Available Item Numbers:** {available_items}",
+            f"``````\n🔍 **Available Item Numbers:** {available_items}",
             color=0xFF0000)
-        return await ctx.send(embed=embed)
-
+        result, error = await light_safe_api_call(ctx.send, embed=embed)
+        return
     item = item_list[item_number -
                      1]  # The item corresponds to the user's input
     item_data = SHOP_ITEMS[item]
     balance = user_data["balance"]
-
     if balance < item_data["price"]:
         shortage = item_data["price"] - balance
         embed = discord.Embed(
             title="💸 **INSUFFICIENT SPIRIT STONES**",
             description=
-            f"```diff\n- TREASURY INADEQUATE\n```\n💰 **Required:** {item_data['price']:,} SS\n💎 **You Have:** {balance:,} SS\n📉 **Shortage:** {shortage:,} SS\n\n⚡ *Gather more power before returning...*",
+            f"``````\n💰 **Required:** {item_data['price']:,} SS\n💎 **You Have:** {balance:,} SS\n📉 **Shortage:** {shortage:,} SS\n\n⚡ *Gather more power before returning...*",
             color=0xFF6347)
-        return await ctx.send(embed=embed)
-
+        result, error = await light_safe_api_call(ctx.send, embed=embed)
+        return
     if item == "nickname_lock":
         add_nickname_lock(user_id)
         effect = "🔒 **IDENTITY SEALED** - *Your name is now protected from all changes*"
@@ -3804,43 +3716,34 @@ async def buy(ctx, item_number: int):
     else:
         effect = "✨ **ARTIFACT BONDED** - *The power is now yours to wield*"
         effect_color = 0x9932CC
-
     # Update balance
     new_balance = balance - item_data["price"]
     await update_user_data(user_id, balance=new_balance)
-
     # Log transaction
     log_transaction(user_id, "shop_purchase", -item_data["price"], balance,
                     new_balance, f"Purchased {item}")
-
     embed = discord.Embed(
         title="✅ **TRANSACTION COMPLETED** ✅",
         description=
-        f"```fix\n◆ ARTIFACT ACQUISITION SUCCESSFUL ◆\n```\n{effect}",
+        f"``````\n{effect}",
         color=effect_color)
-
     embed.add_field(name="🎁 **ARTIFACT CLAIMED**",
-                    value=f"```css\n{item.replace('_', ' ').title()}\n```",
+                    value="``````",
                     inline=True)
-
     embed.add_field(
         name="💰 **COST PAID**",
-        value=f"```diff\n- {item_data['price']:,} Spirit Stones\n```",
+        value="``````",
         inline=True)
-
     embed.add_field(name="💎 **REMAINING BALANCE**",
-                    value=f"```yaml\n{new_balance:,} SS\n```",
+                    value="``````",
                     inline=True)
-
     embed.set_thumbnail(
         url=ctx.author.avatar.url if ctx.author.avatar else None)
     embed.set_footer(text="🌟 Power has been transferred • Use it wisely",
                      icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
-
-    result, error = await safe_send(ctx, embed=embed)
+    result, error = await safe_api_call(ctx.send, embed=embed)
     if error:
         logger.error(f"❌ Failed to send message: {error}")
-
 
 @bot.command()
 @safe_command_wrapper
@@ -3852,84 +3755,73 @@ async def givess(ctx, member: discord.Member, amount: int):
             embed = discord.Embed(
                 title="🚫 **ACCESS DENIED** 🚫",
                 description=
-                "```diff\n- INSUFFICIENT AUTHORITY\n- Administrator permissions required\n```\n⚡ *Only those with divine authority may grant such power...*",
+                "``````\n⚡ *Only those with divine authority may grant such power...*",
                 color=0xFF0000)
-            return await ctx.send(embed=embed)
-
+            result, error = await light_safe_api_call(ctx.send, embed=embed)
+            return
         if amount <= 0:
             embed = discord.Embed(
                 title="❌ **INVALID AMOUNT** ❌",
                 description=
-                "```diff\n- ERROR: Amount must be positive\n+ Enter a valid positive number\n```",
+                "``````",
                 color=0xFF4500)
-            return await ctx.send(embed=embed)
-
+            result, error = await light_safe_api_call(ctx.send, embed=embed)
+            return
         receiver_id = str(member.id)
         receiver_data = get_user_data(receiver_id)  # Sync function
         old_balance = receiver_data.get("balance", 0)
         new_balance = old_balance + amount
-
         # FIXED: Use await for async function
         success = await update_user_data(receiver_id, balance=new_balance)
-
         if not success:
             embed = discord.Embed(
                 title="❌ **DATABASE ERROR** ❌",
                 description=
-                "```diff\n- Failed to update user data\n- Please try again later\n```",
+                "``````",
                 color=0xFF0000)
-            return await ctx.send(embed=embed)
-
+            result, error = await light_safe_api_call(ctx.send, embed=embed)
+            return
         # Log transaction
         log_transaction(receiver_id, "admin_grant", amount, old_balance,
                         new_balance,
                         f"Admin grant by {ctx.author.display_name}")
-
         embed = discord.Embed(
             title="✨ **DIVINE BLESSING GRANTED** ✨",
             description=
-            "```fix\n⚡ ADMINISTRATOR AUTHORITY ACTIVATED ⚡\n```\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n*🌟 The cosmic treasury flows with divine will 🌟*",
+            "``````\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n*🌟 The cosmic treasury flows with divine will 🌟*",
             color=0x00FF7F)
-
         embed.add_field(
             name="👑 **ADMINISTRATOR**",
             value=
-            f"```ansi\n\u001b[0;35m{ctx.author.display_name}\u001b[0m\n```",
+            f"``````",
             inline=True)
-
         embed.add_field(
             name="🎯 **RECIPIENT**",
-            value=f"```ansi\n\u001b[0;36m{member.display_name}\u001b[0m\n```",
+            value=f"``````",
             inline=True)
-
         embed.add_field(name="💰 **AMOUNT GRANTED**",
-                        value=f"```yaml\n💎 +{amount:,} Spirit Stones\n```",
+                        value=f"``````",
                         inline=False)
-
         embed.add_field(name="💎 **NEW BALANCE**",
-                        value=f"```fix\n💎 {new_balance:,} SS\n```",
+                        value=f"``````",
                         inline=False)
-
         embed.set_footer(
             text="⚡ Divine Administrative System ⚡",
             icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
         embed.timestamp = datetime.datetime.now(timezone.utc)
-
-        result, error = await safe_send(ctx, embed=embed)
+        result, error = await safe_api_call(ctx.send, embed=embed)
         if error:
             logger.error(f"❌ Failed to send message: {error}")
-
     except Exception as e:
         logger.error(f"❌ Critical error in givess: {e}")
         import traceback
         traceback.print_exc()
-
         error_embed = discord.Embed(
             title="❌ **SYSTEM ERROR** ❌",
             description=
-            "```diff\n- Database operation failed\n- Please check logs\n```",
+            "``````",
             color=0xFF0000)
-        await ctx.send(embed=error_embed)
+        result, error = await light_safe_api_call(ctx.send, embed=error_embed)
 
 
 @bot.command()
@@ -3940,97 +3832,82 @@ async def takess(ctx, member: discord.Member, amount: int):
         embed = discord.Embed(
             title="🚫 **ACCESS DENIED** 🚫",
             description=
-            "```diff\n- INSUFFICIENT AUTHORITY\n- Administrator permissions required\n```\n⚡ *Only those with divine authority may wield such power...*",
+            "``````\n⚡ *Only those with divine authority may wield such power...*",
             color=0xFF0000)
-        return await ctx.send(embed=embed)
-
+        result, error = await light_safe_api_call(ctx.send, embed=embed)
+        return
     if amount <= 0:
         embed = discord.Embed(
             title="❌ **INVALID AMOUNT** ❌",
             description=
-            "```diff\n- ERROR: Amount must be positive\n+ Enter a valid positive number\n```",
+            "``````",
             color=0xFF4500)
-        return await ctx.send(embed=embed)
-
+        result, error = await light_safe_api_call(ctx.send, embed=embed)
+        return
     target_id = str(member.id)
     target_data = get_user_data(target_id)
     current_balance = target_data["balance"]
-
     if amount > current_balance:
         embed = discord.Embed(
             title="⚠️ **INSUFFICIENT FUNDS** ⚠️",
             description=
-            f"```diff\n- Cannot remove more than available\n```\n💰 **Target Balance:** {current_balance:,} SS\n📉 **Requested Removal:** {amount:,} SS\n\n⚡ *The void cannot claim what does not exist...*",
+            f"``````\n💰 **Target Balance:** {current_balance:,} SS\n📉 **Requested Removal:** {amount:,} SS\n\n⚡ *The void cannot claim what does not exist...*",
             color=0xFF6347)
-        return await ctx.send(embed=embed)
-
+        result, error = await light_safe_api_call(ctx.send, embed=embed)
+        return
     new_balance = current_balance - amount
     await update_user_data(target_id, balance=new_balance)
-
     # Log transaction
     log_transaction(target_id, "admin_remove", -amount, current_balance,
                     new_balance, f"Admin removal by {ctx.author.display_name}")
-
     embed = discord.Embed(
         title="💀 **DIVINE JUDGMENT EXECUTED** 💀",
         description=
-        "```fix\n⚡ ADMINISTRATOR AUTHORITY ACTIVATED ⚡\n```\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n*🌑 The cosmic balance demands sacrifice 🌑*",
+        "``````\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n*🌑 The cosmic balance demands sacrifice 🌑*",
         color=0xFF1744)
-
     embed.add_field(
         name="👑 **ADMINISTRATOR**",
-        value=f"```ansi\n\u001b[0;31m{ctx.author.display_name}\u001b[0m\n```",
+        value=f"``````",
         inline=True)
-
     embed.add_field(
         name="🎯 **TARGET**",
-        value=f"```ansi\n\u001b[0;33m{member.display_name}\u001b[0m\n```",
+        value=f"``````",
         inline=True)
-
     embed.add_field(name="💸 **AMOUNT REMOVED**",
-                    value=f"```yaml\n💎 -{amount:,} Spirit Stones\n```",
+                    value=f"``````",
                     inline=False)
-
     embed.add_field(name="💔 **REMAINING BALANCE**",
-                    value=f"```fix\n💎 {new_balance:,} SS\n```",
+                    value=f"``````",
                     inline=False)
-
     embed.set_footer(
         text="⚡ Divine Administrative System ⚡",
         icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
     embed.timestamp = datetime.datetime.now(timezone.utc)
-
-    result, error = await safe_send(ctx, embed=embed)
+    result, error = await safe_api_call(ctx.send, embed=embed)
     if error:
         logger.error(f"❌ Failed to send message: {error}")
-
 
 @bot.command()
 @safe_command_wrapper
 @cooldown_check('top')
 async def top(ctx):
     leaderboard = get_leaderboard('balance', 10)
-
     embed = discord.Embed(
         title="🏆 **SPIRIT STONES LEADERBOARD** 🏆",
         description=
-        "```css\n[HALL OF SPIRITUAL LEGENDS]\n```\n💎 *The most powerful cultivators in the realm...*",
+        "``````\n💎 *The most powerful cultivators in the realm...*",
         color=0xFFD700)
-
     medal_emojis = [
         "🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"
     ]
-
     leaderboard_text = ""
     for i, (user_id, balance) in enumerate(leaderboard):
         try:
             user = bot.get_user(int(user_id))
             username = user.display_name if user else "Unknown User"
-
             leaderboard_text += f"{medal_emojis[i]} **{username}** - `{balance:,}` SS\n"
         except Exception:
             continue
-
     if leaderboard_text:
         embed.add_field(name="💰 **TOP CULTIVATORS**",
                         value=leaderboard_text,
@@ -4039,13 +3916,11 @@ async def top(ctx):
         embed.add_field(
             name="💰 **TOP CULTIVATORS**",
             value=
-            "```diff\n- No data available yet\n+ Start cultivating to appear here!\n```",
+            "``````",
             inline=False)
-
     embed.set_footer(text="⚡ Power rankings updated in real-time",
                      icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
-
-    result, error = await safe_send(ctx, embed=embed)
+    result, error = await light_safe_api_call(ctx.send, embed=embed)
     if error:
         logger.error(f"❌ Failed to send message: {error}")
 
@@ -4056,55 +3931,44 @@ async def top(ctx):
 async def lucky(ctx):
     """Shows total SP of top 10 players instead of individual gambling stats"""
     sp_leaderboard = get_leaderboard('sp', 10)
-
     total_sp = sum(sp for _, sp in sp_leaderboard)
-
     embed = discord.Embed(
         title="🍀 **COSMIC FORTUNE READING** 🍀",
         description=
-        "```css\n[SPIRITUAL ENERGY ANALYSIS]\n```\n⚡ *The combined power of the top cultivators flows through the realm...*",
+        "``````\n⚡ *The combined power of the top cultivators flows through the realm...*",
         color=0x00FF7F)
-
     # Show top 10 SP holders
     medal_emojis = [
         "🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"
     ]
-
     leaderboard_text = ""
     for i, (user_id, sp) in enumerate(sp_leaderboard):
         try:
             user = bot.get_user(int(user_id))
             username = user.display_name if user else "Unknown User"
-
             leaderboard_text += f"{medal_emojis[i]} **{username}** - `{sp:,}` SP\n"
         except Exception:
             continue
-
     if leaderboard_text:
         embed.add_field(name="⚡ **TOP ENERGY MASTERS**",
                         value=leaderboard_text,
                         inline=False)
-
     embed.add_field(
         name="🌟 **COSMIC ENERGY POOL**",
         value=
-        f"```fix\n💫 {total_sp:,} Total Spirit Points\n```\n*The accumulated power of the realm's elite...*",
+        f"``````\n*The accumulated power of the realm's elite...*",
         inline=False)
-
     embed.add_field(
         name="🔮 **FORTUNE INSIGHT**",
         value=
-        f"```yaml\nAverage Power: {total_sp // 10 if sp_leaderboard else 0:,} SP\nRealm Status: {'Flourishing' if total_sp > 100000 else 'Growing' if total_sp > 50000 else 'Developing'}\n```",
+        f"``````",
         inline=False)
-
     embed.set_footer(
         text="🍀 The universe reveals its secrets to those who seek",
         icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
-
-    result, error = await safe_send(ctx, embed=embed)
+    result, error = await light_safe_api_call(ctx.send, embed=embed)
     if error:
         logger.error(f"❌ Failed to send message: {error}")
-
 
 @bot.command()
 @safe_command_wrapper
@@ -4113,62 +3977,50 @@ async def unlucky(ctx):
     """Shows top 10 users who lost the most SP this month"""
     current_month = datetime.datetime.now(timezone.utc).strftime("%Y-%m")
     top_losers = get_top_losers(current_month, 10)
-
     if not top_losers:
         embed = discord.Embed(
             title="🌟 **BLESSED MONTH** 🌟",
             description=
-            "```css\n[NO SIGNIFICANT LOSSES DETECTED]\n```\n✨ *The void has been merciful this month...*",
+            "``````\n✨ *The void has been merciful this month...*",
             color=0x32CD32)
-
         embed.add_field(
             name="🛡️ **COSMIC PROTECTION**",
             value=
-            "```diff\n+ No major gambling losses recorded\n+ The realm enjoys fortune's favor\n```",
+            "``````",
             inline=False)
-
         embed.set_footer(
             text=
             f"📅 {datetime.datetime.now(timezone.utc).strftime('%B %Y')} • Keep the luck flowing!",
             icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
-
-        return await ctx.send(embed=embed)
-
+        result, error = await light_safe_api_call(ctx.send, embed=embed)
+        return
     total_losses = sum(losses for _, losses in top_losers)
-
     embed = discord.Embed(
         title="💀 **HALL OF COSMIC MISFORTUNE** 💀",
         description=
-        "```css\n[THE VOID'S GREATEST VICTIMS]\n```\n🌑 *Those who have fed the darkness most this month...*",
+        "``````\n🌑 *Those who have fed the darkness most this month...*",
         color=0x8B0000)
-
     # Show top 10 losers
     skull_emojis = ["💀", "☠️", "👹", "😈", "🔥", "⚡", "💸", "😭", "😱", "🆘"]
-
     leaderboard_text = ""
     for i, (user_id, losses) in enumerate(top_losers):
         try:
             user = bot.get_user(int(user_id))
             username = user.display_name if user else "Unknown User"
-
             leaderboard_text += f"{skull_emojis[i]} **{username}** - `{losses:,}` SP Lost\n"
         except Exception:
             continue
-
     if leaderboard_text:
         embed.add_field(name="💸 **VOID'S FAVORED VICTIMS**",
                         value=leaderboard_text,
                         inline=False)
-
     embed.add_field(
         name="🌑 **TOTAL DEVASTATION**",
         value=
-        f"```fix\n💀 {total_losses:,} Spirit Points Consumed\n```\n*The accumulated suffering feeds the endless void...*",
+        f"``````\n*The accumulated suffering feeds the endless void...*",
         inline=False)
-
     # Calculate average loss and provide insight
     average_loss = total_losses // len(top_losers) if top_losers else 0
-
     if total_losses >= 500000:
         void_status = "🌑 **VOID ASCENDANT** - *The darkness grows stronger with each sacrifice*"
         status_color = "Catastrophic"
@@ -4181,28 +4033,23 @@ async def unlucky(ctx):
     else:
         void_status = "🔥 **VOID STIRRING** - *Minor tributes to the darkness*"
         status_color = "Moderate"
-
     embed.add_field(
         name="👹 **VOID ANALYSIS**",
         value=
-        f"```yaml\nAverage Loss: {average_loss:,} SP\nVoid Status: {status_color}\nMonth: {datetime.datetime.now(timezone.utc).strftime('%B %Y')}\n```\n{void_status}",
+        f"``````\n{void_status}",
         inline=False)
-
     embed.add_field(
         name="⚠️ **COSMIC WARNING**",
         value=
-        "```diff\n- The void remembers every sacrifice\n- Fortune is fickle, wisdom is eternal\n+ Practice restraint in your cosmic journey\n```",
+        "``````",
         inline=False)
-
     embed.set_footer(
         text=
         f"💀 Monthly Misfortune Report • {datetime.datetime.now(timezone.utc).strftime('%B %Y')}",
         icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
-
-    result, error = await safe_send(ctx, embed=embed)
+    result, error = await light_safe_api_call(ctx.send, embed=embed)
     if error:
         logger.error(f"❌ Failed to send message: {error}")
-
 
 @bot.command()
 @commands.has_permissions(administrator=True)
@@ -4211,43 +4058,54 @@ async def emergency_repair(ctx):
     embed = discord.Embed(
         title="🚨 **EMERGENCY DATABASE REPAIR** 🚨",
         description=
-        "```css\n[INITIATING EMERGENCY PROTOCOLS]\n```\n⚠️ *Attempting to repair database corruption...*",
+        "``````\n⚠️ *Attempting to repair database corruption...*",
         color=0xFF6B00)
 
-    message = await ctx.send(embed=embed)
+    result, error = await safe_api_call(ctx.send, embed=embed)
+    if error or result is None:
+        logger.error(f"❌ Failed to send emergency repair message: {error}")
+        return
+    message = result
 
     try:
         # Check database integrity
         if await check_database_integrity():
-            embed.description = "```diff\n+ Database integrity check passed\n+ No repair needed\n```"
+            embed.description = "``````"
             embed.color = 0x00FF00
         else:
-            embed.description = "```css\n[ATTEMPTING DATABASE REPAIR]\n```"
-            await message.edit(embed=embed)
+            embed.description = "``````"
+            result, error = await safe_api_call(message.edit, embed=embed)
+            if error:
+                logger.error(f"❌ Failed to edit emergency repair message: {error}")
 
             # Attempt repair
             if await repair_database():
-                embed.description = "```diff\n+ Database repair successful\n+ System restored\n```"
+                embed.description = "``````"
                 embed.color = 0x00FF00
             else:
                 # Try backup restore
-                embed.description = "```css\n[RESTORING FROM BACKUP]\n```"
-                await message.edit(embed=embed)
+                embed.description = "``````"
+                result, error = await safe_api_call(message.edit, embed=embed)
+                if error:
+                    logger.error(f"❌ Failed to edit emergency repair message: {error}")
 
                 if await restore_from_latest_backup():
-                    embed.description = "```diff\n+ Backup restore successful\n+ System restored from backup\n```"
+                    embed.description = "``````"
                     embed.color = 0xFFAA00
                 else:
-                    embed.description = "```diff\n- All repair attempts failed\n- Manual intervention required\n```"
+                    embed.description = "``````"
                     embed.color = 0xFF0000
 
-        await message.edit(embed=embed)
+        result, error = await safe_api_call(message.edit, embed=embed)
+        if error:
+            logger.error(f"❌ Failed to edit final emergency repair message: {error}")
 
     except Exception as e:
-        embed.description = f"```diff\n- Emergency repair failed\n- Error: {str(e)[:100]}...\n```"
+        embed.description = f"``````"
         embed.color = 0xFF0000
-        await message.edit(embed=embed)
-
+        result, error = await safe_api_call(message.edit, embed=embed)
+        if error:
+            logger.error(f"❌ Failed to edit emergency repair error message: {error}")
 
 @bot.command()
 @commands.has_permissions(administrator=True)
@@ -4262,8 +4120,9 @@ async def errortest(ctx, error_type: str = "generic"):
             commands.Parameter("test",
                                commands.Parameter.POSITIONAL_OR_KEYWORD))
     else:
-        await ctx.send("Available error types: generic, permission, argument")
-
+        result, error = await light_safe_api_call(ctx.send, "Available error types: generic, permission, argument")
+        if error:
+            logger.error(f"❌ Failed to send errortest message: {error}")
 
 @bot.command()
 @safe_command_wrapper
@@ -4272,15 +4131,12 @@ async def lose(ctx, member: Optional[discord.Member] = None):
     """Shows SP lost this month for the user or tagged member"""
     user = member or ctx.author
     user_id = str(user.id)
-
     # Get current month stats
     current_month = datetime.datetime.now(timezone.utc).strftime("%Y-%m")
     monthly_stats = get_monthly_stats(user_id, current_month)
-
     losses = monthly_stats.get("losses", 0)
     wins = monthly_stats.get("wins", 0)
     net_result = wins - losses
-
     # Determine loss tier and color
     if losses >= 100000:
         loss_tier = "💀 **VOID TOUCHED**"
@@ -4300,27 +4156,22 @@ async def lose(ctx, member: Optional[discord.Member] = None):
     else:
         loss_tier = "🛡️ **UNTOUCHED**"
         tier_color = 0x32CD32
-
     embed = discord.Embed(
         title=f"💸 **{user.display_name.upper()}'S VOID TRIBUTE** 💸",
         description=
-        f"```css\n[MONTHLY GAMBLING ANALYSIS]\n```\n{loss_tier} • *The darkness remembers every sacrifice...*",
+        f"``````\n{loss_tier} • *The darkness remembers every sacrifice...*",
         color=tier_color)
-
     embed.add_field(name="💀 **LOSSES TO THE VOID**",
-                    value=f"```diff\n- {losses:,} Spirit Points\n```",
+                    value=f"``````",
                     inline=True)
-
     embed.add_field(name="🏆 **GAINS FROM FORTUNE**",
-                    value=f"```diff\n+ {wins:,} Spirit Points\n```",
+                    value=f"``````",
                     inline=True)
-
     embed.add_field(
         name="⚖️ **NET RESULT**",
         value=
-        f"```{'diff' if net_result >= 0 else 'css'}\n{'+ ' if net_result >= 0 else ''}{net_result:,} Spirit Points\n```",
+        f"``````",
         inline=False)
-
     # Loss ratio calculation
     total_gambled = wins + losses
     if total_gambled > 0:
@@ -4328,9 +4179,8 @@ async def lose(ctx, member: Optional[discord.Member] = None):
         embed.add_field(
             name="📊 **GAMBLING STATISTICS**",
             value=
-            f"```yaml\nTotal Gambled: {total_gambled:,} SP\nLoss Rate: {loss_percentage:.1f}%\nRisk Level: {'HIGH' if loss_percentage > 60 else 'MODERATE' if loss_percentage > 40 else 'LOW'}\n```",
+            f"``````",
             inline=False)
-
     # Motivational message based on performance
     if net_result > 0:
         message = "🌟 *Fortune favors your bold spirit!*"
@@ -4338,19 +4188,15 @@ async def lose(ctx, member: Optional[discord.Member] = None):
         message = "⚖️ *Perfect balance - the universe is neutral.*"
     else:
         message = "🌑 *The void grows stronger with your offerings...*"
-
     embed.add_field(name="🔮 **COSMIC INSIGHT**", value=message, inline=False)
-
     embed.set_thumbnail(url=user.avatar.url if user.avatar else None)
     embed.set_footer(
         text=
         f"📅 {datetime.datetime.now(timezone.utc).strftime('%B %Y')} • Gamble responsibly",
         icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
-
-    result, error = await safe_send(ctx, embed=embed)
+    result, error = await light_safe_api_call(ctx.send, embed=embed)
     if error:
         logger.error(f"❌ Failed to send message: {error}")
-
 
 @bot.command()
 @safe_command_wrapper
@@ -4360,9 +4206,8 @@ async def help(ctx):
     embed = discord.Embed(
         title="📚 **GU CHANG'S CULTIVATION MANUAL** 📚",
         description=
-        "```css\n[COMPLETE COMMAND REFERENCE]\n```\n⚡ *Master these commands to ascend in power...*",
+        "``````\n⚡ *Master these commands to ascend in power...*",
         color=0x9932CC)
-
     # Economy Commands
     embed.add_field(name="💰 **ECONOMY COMMANDS**",
                     value="""```
@@ -4373,7 +4218,6 @@ async def help(ctx):
 !top - View SS leaderboard (top 10)
 ```""",
                     inline=False)
-
     # Gambling Commands
     embed.add_field(name="🎰 **GAMBLING COMMANDS**",
                     value="""```
@@ -4383,20 +4227,18 @@ async def help(ctx):
 !lose [@user] - Check monthly gambling losses
 ```""",
                     inline=False)
-
     # Shop Commands
     embed.add_field(name="🛒 **SHOP COMMANDS**",
                     value="""```
-    !shop - View available items
-    !buy <item> - Purchase shop items
-      • nickname_lock (5,000 SS)
-      • temp_admin (25,000 SS)
-      • hmw_role (50,000 SS)
-      • name_change_card (10,000 SS)
-    !usename @user "new nickname" - Use name change card
-    ```""",
+!shop - View available items
+!buy <item> - Purchase shop items
+  -  nickname_lock (5,000 SS)
+  -  temp_admin (25,000 SS)
+  -  hmw_role (50,000 SS)
+  -  name_change_card (10,000 SS)
+!usename @user "new nickname" - Use name change card
+```""",
                     inline=False)
-
     # Admin Commands
     embed.add_field(name="👑 **ADMIN COMMANDS**",
                     value="""```
@@ -4405,9 +4247,8 @@ async def help(ctx):
 !sendsp <@user> <amount> - Grant Spirit Points (Owner Only)
 ```""",
                     inline=False)
-
     embed.add_field(name="⚡ **DAILY REWARDS**",
-                    value="""```yaml
+                    value="""```
 Standard: 300 SP
 Booster: 350 SP (+50)
 HMW: 350 SP (+50)
@@ -4415,14 +4256,11 @@ Admin: 400 SP (+100)
 Streak Bonus: 2x reward at 5-day streak
 ```""",
                     inline=False)
-
     embed.set_footer(text="🌟 Master the commands, master your destiny • !help",
                      icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
-
-    result, error = await safe_send(ctx, embed=embed)
+    result, error = await light_safe_api_call(ctx.send, embed=embed)
     if error:
         logger.error(f"❌ Failed to send message: {error}")
-
 
 # ==== Flask Thread ====
 def run_flask():
