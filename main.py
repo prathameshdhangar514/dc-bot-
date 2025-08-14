@@ -660,6 +660,10 @@ async def handle_global_error(ctx, error):
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
+if TOKEN:
+    TOKEN = TOKEN.strip()
+else:
+    logger.critical("❌ DISCORD_BOT_TOKEN not set in env variables")
 
 # ==== Constants ====
 ROLE_ID_TEMP_ADMIN = 1393927331101544539  # Replace with actual ID
