@@ -339,9 +339,15 @@ async def enhanced_safe_api_call(func, *args, **kwargs):
 
 
 async def safe_api_call(func, *args, **kwargs):
-    """Simple wrapper for the enhanced API call function"""
-    # Track API calls for monitoring
-    discord_api_calls.append(time.time())
+    """Simple wrapper for the enhanced API call function with memory management"""
+    now = time.time()
+
+    # Clean old records to prevent memory leak (keep last 5 minutes)
+    discord_api_calls[:] = [t for t in discord_api_calls if now - t < 300]
+
+    # Track current API call
+    discord_api_calls.append(now)
+
     result, error = await enhanced_safe_api_call(func, *args, **kwargs)
     return result, error
 
@@ -1073,119 +1079,267 @@ class GitHubBackupManager:
             "Accept": "application/vnd.github.v3+json",
             "Content-Type": "application/json"
         }
+        self.max_retries = 3
+        self.retry_delay = 5
 
     def upload_backup_to_github(self, backup_file_path):
-        """Upload backup file to GitHub repository"""
+        """Upload backup with retry logic and better error handling"""
+        for attempt in range(self.max_retries):
+            try:
+                logger.info(
+                    f"🔄 GitHub upload attempt {attempt + 1}/{self.max_retries}"
+                )
+
+                # Read and encode file
+                with open(backup_file_path, 'rb') as f:
+                    file_content = f.read()
+
+                if len(file_content) == 0:
+                    return False, "Backup file is empty"
+
+                encoded_content = base64.b64encode(file_content).decode(
+                    'utf-8')
+                filename = os.path.basename(backup_file_path)
+                github_path = f"backups/{filename}"
+
+                # Check if file exists
+                check_url = f"{GITHUB_API_BASE}/repos/{self.repo}/contents/{github_path}"
+                check_response = requests.get(check_url,
+                                              headers=self.headers,
+                                              timeout=30)
+
+                # Prepare commit data
+                commit_data = {
+                    "message":
+                    f"🤖 Auto backup: {filename} ({len(file_content):,} bytes)",
+                    "content": encoded_content,
+                    "branch": "main"
+                }
+
+                # Add SHA if file exists
+                if check_response.status_code == 200:
+                    existing_file = check_response.json()
+                    commit_data["sha"] = existing_file["sha"]
+                    logger.info("📝 Updating existing backup file")
+                else:
+                    logger.info("📝 Creating new backup file")
+
+                # Upload file
+                upload_url = f"{GITHUB_API_BASE}/repos/{self.repo}/contents/{github_path}"
+                response = requests.put(upload_url,
+                                        headers=self.headers,
+                                        json=commit_data,
+                                        timeout=60)
+
+                if response.status_code in [200, 201]:
+                    logger.info(f"✅ GitHub upload successful: {filename}")
+                    return True, response.json()
+                elif response.status_code == 403:
+                    error_msg = f"GitHub API forbidden (check token permissions): {response.text[:200]}"
+                    logger.error(error_msg)
+                    return False, error_msg
+                elif response.status_code == 422:
+                    error_msg = f"GitHub API validation error: {response.text[:200]}"
+                    logger.error(error_msg)
+                    return False, error_msg
+                else:
+                    error_msg = f"GitHub API error {response.status_code}: {response.text[:200]}"
+                    logger.warning(error_msg)
+
+                    # Retry on certain errors
+                    if attempt < self.max_retries - 1 and response.status_code in [
+                            500, 502, 503, 504
+                    ]:
+                        logger.info(
+                            f"⏳ Retrying in {self.retry_delay} seconds...")
+                        time.sleep(self.retry_delay)
+                        continue
+                    else:
+                        return False, error_msg
+
+            except requests.exceptions.Timeout:
+                error_msg = f"GitHub upload timeout (attempt {attempt + 1})"
+                logger.warning(error_msg)
+                if attempt < self.max_retries - 1:
+                    time.sleep(self.retry_delay)
+                    continue
+                else:
+                    return False, "GitHub upload timeout after retries"
+
+            except Exception as e:
+                error_msg = f"GitHub upload error: {str(e)}"
+                logger.error(error_msg)
+                if attempt < self.max_retries - 1:
+                    time.sleep(self.retry_delay)
+                    continue
+                else:
+                    return False, error_msg
+
+        return False, "Max retries exceeded"
+
+    def test_connection(self):
+        """Test GitHub API connection and permissions"""
         try:
-            # Read the backup file
-            with open(backup_file_path, 'rb') as f:
-                file_content = f.read()
+            # Test repository access
+            test_url = f"{GITHUB_API_BASE}/repos/{self.repo}"
+            response = requests.get(test_url, headers=self.headers, timeout=15)
 
-            # Encode file content to base64
-            encoded_content = base64.b64encode(file_content).decode('utf-8')
+            if response.status_code == 200:
+                repo_data = response.json()
+                logger.info(
+                    f"✅ GitHub repo accessible: {repo_data.get('full_name')}")
 
-            # Create filename for GitHub
-            filename = os.path.basename(backup_file_path)
-            github_path = f"backups/{filename}"
+                # Test write permissions by checking if we can list contents
+                contents_url = f"{GITHUB_API_BASE}/repos/{self.repo}/contents"
+                contents_response = requests.get(contents_url,
+                                                 headers=self.headers,
+                                                 timeout=15)
 
-            # Check if file already exists
-            check_url = f"{GITHUB_API_BASE}/repos/{self.repo}/contents/{github_path}"
-            check_response = requests.get(check_url, headers=self.headers)
-
-            # Prepare the commit data
-            commit_data = {
-                "message": f"🤖 Auto backup: {filename}",
-                "content": encoded_content,
-                "branch": "main"
-            }
-
-            # If file exists, we need the SHA for update
-            if check_response.status_code == 200:
-                existing_file = check_response.json()
-                commit_data["sha"] = existing_file["sha"]
-
-            # Upload/update the file
-            upload_url = f"{GITHUB_API_BASE}/repos/{self.repo}/contents/{github_path}"
-            response = requests.put(upload_url,
-                                    headers=self.headers,
-                                    json=commit_data)
-
-            if response.status_code in [200, 201]:
-                return True, response.json()
+                if contents_response.status_code in [
+                        200, 404
+                ]:  # 404 is OK for empty repo
+                    logger.info("✅ GitHub write access confirmed")
+                    return True, "Connection successful"
+                else:
+                    return False, f"No write access: {contents_response.status_code}"
             else:
-                return False, f"GitHub API Error: {response.status_code} - {response.text}"
+                return False, f"Repository access failed: {response.status_code} - {response.text[:100]}"
 
         except Exception as e:
-            return False, str(e)
+            return False, f"Connection test failed: {str(e)}"
 
     def download_backup_from_github(self, filename=None):
-        """Download backup file from GitHub repository"""
-        try:
-            if not filename:
-                # Get the latest backup file
-                list_url = f"{GITHUB_API_BASE}/repos/{self.repo}/contents/backups"
-                response = requests.get(list_url, headers=self.headers)
+        """Download backup file from GitHub repository with retries"""
+        for attempt in range(self.max_retries):
+            try:
+                if not filename:
+                    # Get the latest backup file
+                    success, files = self.list_github_backups()
+                    if not success or not files:
+                        return False, "No backup files found in repository"
+                    filename = files[0]['name']  # Already sorted by date
+
+                # Download the specific file
+                download_url = f"{GITHUB_API_BASE}/repos/{self.repo}/contents/backups/{filename}"
+                response = requests.get(download_url,
+                                        headers=self.headers,
+                                        timeout=60)
 
                 if response.status_code != 200:
-                    return False, "Failed to list backup files"
+                    if attempt < self.max_retries - 1:
+                        time.sleep(self.retry_delay)
+                        continue
+                    return False, f"Failed to download {filename}: {response.status_code}"
 
-                files = response.json()
-                backup_files = [f for f in files if f['name'].endswith('.db')]
+                file_data = response.json()
+                file_content = base64.b64decode(file_data['content'])
 
-                if not backup_files:
-                    return False, "No backup files found in repository"
+                # Create local backups directory
+                if not os.path.exists("backups"):
+                    os.makedirs("backups")
 
-                # Sort by name (which includes timestamp) to get latest
-                backup_files.sort(key=lambda x: x['name'], reverse=True)
-                latest_file = backup_files[0]
-                filename = latest_file['name']
+                # Save the downloaded file locally
+                local_path = os.path.join("backups", filename)
+                with open(local_path, 'wb') as f:
+                    f.write(file_content)
 
-            # Download the specific file
-            download_url = f"{GITHUB_API_BASE}/repos/{self.repo}/contents/backups/{filename}"
-            response = requests.get(download_url, headers=self.headers)
+                logger.info(
+                    f"✅ Downloaded backup: {filename} ({len(file_content):,} bytes)"
+                )
+                return True, local_path
 
-            if response.status_code != 200:
-                return False, f"Failed to download {filename}"
+            except Exception as e:
+                if attempt < self.max_retries - 1:
+                    logger.warning(
+                        f"Download attempt {attempt + 1} failed: {e}")
+                    time.sleep(self.retry_delay)
+                    continue
+                else:
+                    return False, f"Download failed after retries: {str(e)}"
 
-            file_data = response.json()
-
-            # Decode base64 content
-            file_content = base64.b64decode(file_data['content'])
-
-            # Create local backups directory if it doesn't exist
-            if not os.path.exists("backups"):
-                os.makedirs("backups")
-
-            # Save the downloaded file locally
-            local_path = os.path.join("backups", filename)
-            with open(local_path, 'wb') as f:
-                f.write(file_content)
-
-            return True, local_path
-
-        except Exception as e:
-            return False, str(e)
+        return False, "Max retries exceeded"
 
     def list_github_backups(self):
-        """List all backup files in GitHub repository"""
+        """List all backup files in GitHub repository with retries"""
+        for attempt in range(self.max_retries):
+            try:
+                list_url = f"{GITHUB_API_BASE}/repos/{self.repo}/contents/backups"
+                response = requests.get(list_url,
+                                        headers=self.headers,
+                                        timeout=30)
+
+                if response.status_code == 200:
+                    files = response.json()
+                    backup_files = [
+                        f for f in files if f['name'].endswith('.db')
+                    ]
+                    backup_files.sort(key=lambda x: x['name'], reverse=True)
+                    return True, backup_files
+                elif response.status_code == 404:
+                    # Backups directory doesn't exist yet
+                    return True, []
+                else:
+                    if attempt < self.max_retries - 1:
+                        time.sleep(self.retry_delay)
+                        continue
+                    return False, []
+
+            except Exception as e:
+                if attempt < self.max_retries - 1:
+                    logger.warning(f"List attempt {attempt + 1} failed: {e}")
+                    time.sleep(self.retry_delay)
+                    continue
+                else:
+                    logger.error(f"Error listing GitHub backups: {e}")
+                    return False, []
+
+        return False, []
+
+    def delete_old_backups(self, keep_count=20):
+        """Delete old backup files from GitHub, keeping only the newest ones"""
         try:
-            list_url = f"{GITHUB_API_BASE}/repos/{self.repo}/contents/backups"
-            response = requests.get(list_url, headers=self.headers)
+            success, backup_files = self.list_github_backups()
+            if not success:
+                return False, "Failed to list backups"
 
-            if response.status_code != 200:
-                return False, []
+            if len(backup_files) <= keep_count:
+                return True, f"Only {len(backup_files)} backups found, no cleanup needed"
 
-            files = response.json()
-            backup_files = [f for f in files if f['name'].endswith('.db')]
+            old_backups = backup_files[keep_count:]  # Files to delete
+            deleted_count = 0
 
-            # Sort by name (timestamp) in descending order
-            backup_files.sort(key=lambda x: x['name'], reverse=True)
+            for backup_file in old_backups:
+                try:
+                    delete_url = f"{GITHUB_API_BASE}/repos/{self.repo}/contents/backups/{backup_file['name']}"
+                    delete_data = {
+                        "message":
+                        f"🗑️ Auto cleanup: Remove old backup {backup_file['name']}",
+                        "sha": backup_file['sha'],
+                        "branch": "main"
+                    }
 
-            return True, backup_files
+                    response = requests.delete(delete_url,
+                                               headers=self.headers,
+                                               json=delete_data,
+                                               timeout=30)
+                    if response.status_code == 200:
+                        deleted_count += 1
+                        logger.info(
+                            f"🗑️ Deleted old backup: {backup_file['name']}")
+                    else:
+                        logger.warning(
+                            f"Failed to delete {backup_file['name']}: {response.status_code}"
+                        )
+
+                except Exception as delete_error:
+                    logger.error(
+                        f"Error deleting {backup_file['name']}: {delete_error}"
+                    )
+
+            return True, f"Deleted {deleted_count} old backups"
 
         except Exception as e:
-            logger.error(f"Error listing GitHub backups: {e}")
-            return False, []
+            return False, f"Cleanup error: {str(e)}"
 
 
 # Initialize GitHub backup manager (overwrite the None placeholder)
@@ -1194,23 +1348,60 @@ if GITHUB_TOKEN and GITHUB_BACKUP_REPO:
 
 
 def create_backup_with_cloud_storage():
-    """Create a backup file and return the file path"""
+    """Create a comprehensive backup with proper SQLite handling"""
     try:
-        # Create backups directory if it doesn't exist
+        # Create backups directory
         if not os.path.exists("backups"):
             os.makedirs("backups")
 
-        # Generate backup filename with timestamp
-        timestamp = datetime.datetime.now(timezone.utc).strftime("%Y-%m")
+        # Generate unique timestamp
+        timestamp = datetime.datetime.now(
+            timezone.utc).strftime("%Y%m%d_%H%M%S")
         backup_filename = f"backup_{timestamp}.db"
         backup_path = os.path.join("backups", backup_filename)
 
-        # Copy the database file
-        shutil.copy2(DB_FILE, backup_path)
+        logger.info(f"🔄 Creating SQLite backup: {backup_filename}")
 
-        return backup_path
+        # Method 1: Use VACUUM INTO for clean backup (recommended)
+        try:
+            conn = sqlite3.connect(DB_FILE, timeout=30)
+            conn.execute(f"VACUUM INTO '{backup_path}'")
+            conn.close()
+            logger.info("✅ Used VACUUM INTO method")
+        except Exception as vacuum_error:
+            logger.warning(f"⚠️ VACUUM method failed: {vacuum_error}")
+
+            # Method 2: Fallback to file copy with WAL checkpoint
+            try:
+                conn = sqlite3.connect(DB_FILE, timeout=30)
+                conn.execute("PRAGMA wal_checkpoint(FULL)")
+                conn.close()
+
+                # Copy main database file
+                shutil.copy2(DB_FILE, backup_path)
+                logger.info("✅ Used checkpoint + copy method")
+            except Exception as copy_error:
+                logger.error(f"❌ Backup creation failed: {copy_error}")
+                return None
+
+        # Verify backup was created
+        if os.path.exists(backup_path):
+            file_size = os.path.getsize(backup_path)
+            if file_size > 0:
+                logger.info(
+                    f"✅ Backup created: {backup_filename} ({file_size:,} bytes)"
+                )
+                return backup_path
+            else:
+                logger.error("❌ Backup file is empty")
+                os.remove(backup_path)
+                return None
+        else:
+            logger.error("❌ Backup file not created")
+            return None
+
     except Exception as e:
-        print(f"Backup creation error: {e}")
+        logger.error(f"❌ Backup creation error: {e}")
         return None
 
 
@@ -1274,6 +1465,110 @@ async def restore_from_cloud():
     except Exception as e:
         logger.error(f"❌ Database restore failed: {e}")
         return False
+
+
+def create_sqlite_backup_vacuum():
+    """Create SQLite backup using VACUUM INTO for cleaner backup"""
+    try:
+        import sqlite3
+
+        if not os.path.exists("backups"):
+            os.makedirs("backups")
+
+        timestamp = datetime.datetime.now(
+            timezone.utc).strftime("%Y%m%d_%H%M%S")
+        backup_filename = f"backup_{timestamp}.db"
+        backup_path = os.path.join("backups", backup_filename)
+
+        print(f"🔍 DEBUG: Creating SQLite VACUUM backup at: {backup_path}")
+
+        # Use VACUUM INTO for a clean, optimized backup
+        conn = sqlite3.connect(DB_FILE)
+        conn.execute(f"VACUUM INTO '{backup_path}'")
+        conn.close()
+
+        if os.path.exists(backup_path):
+            file_size = os.path.getsize(backup_path)
+            print(
+                f"✅ SQLite VACUUM backup created: {backup_filename}, size: {file_size} bytes"
+            )
+            return backup_path
+        else:
+            print("❌ SQLite VACUUM backup failed")
+            return None
+
+    except Exception as e:
+        print(f"❌ SQLite VACUUM backup error: {e}")
+        return None
+
+
+def download_backup_from_github(self, filename=None):
+    """Download backup file from GitHub repository"""
+    try:
+        print("🔍 DEBUG: Attempting to download backup...")
+        print(f"🔍 DEBUG: Repository: {self.repo}")
+
+        if not filename:
+            # Get the latest backup file
+            list_url = f"{GITHUB_API_BASE}/repos/{self.repo}/contents/backups"
+            print(f"🔍 DEBUG: List URL: {list_url}")
+
+            response = requests.get(list_url, headers=self.headers)
+            print(f"🔍 DEBUG: List response: {response.status_code}")
+
+            if response.status_code != 200:
+                print(f"❌ Failed to list backup files: {response.text}")
+                return False, "Failed to list backup files"
+
+            files = response.json()
+            print(f"🔍 DEBUG: Found {len(files)} files in backups folder")
+
+            backup_files = [f for f in files if f['name'].endswith('.db')]
+            print(f"🔍 DEBUG: Found {len(backup_files)} .db files")
+
+            for f in backup_files:
+                print(f"🔍 DEBUG: Backup file: {f['name']}")
+
+            if not backup_files:
+                return False, "No backup files found in repository"
+
+            # Sort by name (which includes timestamp) to get latest
+            backup_files.sort(key=lambda x: x['name'], reverse=True)
+            latest_file = backup_files[0]
+            filename = latest_file['name']
+            print(f"🔍 DEBUG: Selected latest backup: {filename}")
+
+        # Download the specific file
+        download_url = f"{GITHUB_API_BASE}/repos/{self.repo}/contents/backups/{filename}"
+        print(f"🔍 DEBUG: Download URL: {download_url}")
+
+        response = requests.get(download_url, headers=self.headers)
+        print(f"🔍 DEBUG: Download response: {response.status_code}")
+
+        if response.status_code != 200:
+            print(f"❌ Failed to download {filename}: {response.text}")
+            return False, f"Failed to download {filename}"
+
+        file_data = response.json()
+
+        # Decode base64 content
+        file_content = base64.b64decode(file_data['content'])
+
+        # Create local backups directory if it doesn't exist
+        if not os.path.exists("backups"):
+            os.makedirs("backups")
+
+        # Save the downloaded file locally
+        local_path = os.path.join("backups", filename)
+        with open(local_path, 'wb') as f:
+            f.write(file_content)
+
+        print(f"✅ Successfully downloaded backup to: {local_path}")
+        return True, local_path
+
+    except Exception as e:
+        print(f"❌ Download error: {e}")
+        return False, str(e)
 
 
 def log_transaction(user_id,
@@ -1531,21 +1826,192 @@ def validate_amount(amount_str, max_amount=1000000):
 
 
 # ==== Auto Backup Task ====
-@tasks.loop(hours=6)  # Backup every 6 hours
-async def auto_backup():
-    """Automatically backup database to GitHub"""
+@tasks.loop(hours=3)
+async def enhanced_auto_backup():
+    """Enhanced automatic backup with comprehensive error handling"""
+    logger.info("🔄 [AUTO-BACKUP] Starting scheduled backup process...")
+
     try:
-        if github_backup:
-            backup_file = create_backup_with_cloud_storage()
-            if backup_file:
-                success, result = github_backup.upload_backup_to_github(
-                    backup_file)
-                if success:
-                    logger.info(f"✅ Auto backup completed: {backup_file}")
-                else:
-                    logger.error(f"❌ Auto backup failed: {result}")
+        # Pre-flight checks
+        if not github_backup:
+            logger.error(
+                "❌ [AUTO-BACKUP] GitHub backup manager not initialized")
+            return False
+
+        # Test GitHub connection first
+        github_ok, github_msg = github_backup.test_connection()
+        if not github_ok:
+            logger.error(
+                f"❌ [AUTO-BACKUP] GitHub connection failed: {github_msg}")
+            # Continue with local backup even if GitHub fails
+
+        # Check disk space
+        try:
+            import shutil
+            free_space = shutil.disk_usage('.').free
+            if free_space < 100_000_000:  # Less than 100MB
+                logger.error(
+                    f"❌ [AUTO-BACKUP] Low disk space: {free_space:,} bytes")
+                return False
+        except Exception as space_error:
+            logger.warning(
+                f"⚠️ [AUTO-BACKUP] Could not check disk space: {space_error}")
+
+        # Create local backup
+        logger.info("📁 [AUTO-BACKUP] Creating local backup...")
+        backup_file = create_backup_with_cloud_storage()
+
+        if not backup_file:
+            logger.error("❌ [AUTO-BACKUP] Failed to create local backup")
+            return False
+
+        file_size = os.path.getsize(backup_file)
+        logger.info(
+            f"✅ [AUTO-BACKUP] Local backup created: {os.path.basename(backup_file)} ({file_size:,} bytes)"
+        )
+
+        # Upload to GitHub if connection is OK
+        if github_ok:
+            logger.info("☁️ [AUTO-BACKUP] Uploading to GitHub...")
+            success, result = github_backup.upload_backup_to_github(
+                backup_file)
+
+            if success:
+                logger.info("✅ [AUTO-BACKUP] GitHub upload successful")
+
+                # Clean up old local backups (keep last 10)
+                try:
+                    backup_files = [
+                        f for f in os.listdir("backups")
+                        if f.startswith("backup_") and f.endswith(".db")
+                    ]
+                    backup_files.sort(key=lambda x: os.path.getmtime(
+                        os.path.join("backups", x)),
+                                      reverse=True)
+
+                    if len(backup_files) > 10:
+                        for old_backup in backup_files[10:]:
+                            old_path = os.path.join("backups", old_backup)
+                            os.remove(old_path)
+                            logger.info(
+                                f"🗑️ [AUTO-BACKUP] Cleaned up old backup: {old_backup}"
+                            )
+
+                except Exception as cleanup_error:
+                    logger.warning(
+                        f"⚠️ [AUTO-BACKUP] Cleanup warning: {cleanup_error}")
+
+                return True
+            else:
+                logger.error(f"❌ [AUTO-BACKUP] GitHub upload failed: {result}")
+                return False
+        else:
+            logger.warning(
+                "⚠️ [AUTO-BACKUP] Skipping GitHub upload due to connection issues"
+            )
+            return True  # Local backup succeeded
+
     except Exception as e:
-        logger.error(f"❌ Auto backup error: {e}")
+        logger.error(f"❌ [AUTO-BACKUP] Critical error: {e}", exc_info=True)
+        return False
+
+
+# Set up error handler for the task
+@enhanced_auto_backup.error
+async def backup_task_error_handler(arg, error):
+    """Handle errors in the backup task and attempt restart"""
+    logger.error(f"❌ [AUTO-BACKUP] Task error occurred: {error}")
+
+    # Wait a bit before restarting
+    await asyncio.sleep(60)  # Wait 1 minute
+
+    try:
+        if not enhanced_auto_backup.is_running():
+            logger.info("🔄 [AUTO-BACKUP] Attempting to restart backup task...")
+            enhanced_auto_backup.restart()
+            logger.info("✅ [AUTO-BACKUP] Task restarted successfully")
+    except Exception as restart_error:
+        logger.error(
+            f"❌ [AUTO-BACKUP] Failed to restart task: {restart_error}")
+
+
+# Assign to auto_backup variable for compatibility
+auto_backup = enhanced_auto_backup
+
+
+@tasks.loop(hours=12)
+async def backup_health_monitor():
+    """Monitor backup system health and alert on issues"""
+    try:
+        logger.info("🔍 [HEALTH-CHECK] Starting backup health check...")
+
+        issues = []
+
+        # Check if auto backup task is running
+        if not auto_backup.is_running():
+            issues.append("Auto backup task is not running")
+            logger.warning("⚠️ [HEALTH-CHECK] Auto backup task stopped")
+
+            # Try to restart it
+            try:
+                auto_backup.start()
+                logger.info("✅ [HEALTH-CHECK] Restarted auto backup task")
+            except Exception as restart_error:
+                logger.error(
+                    f"❌ [HEALTH-CHECK] Failed to restart backup task: {restart_error}"
+                )
+
+        # Check local backup freshness
+        try:
+            if os.path.exists("backups"):
+                backup_files = [
+                    f for f in os.listdir("backups")
+                    if f.startswith("backup_") and f.endswith(".db")
+                ]
+                if backup_files:
+                    backup_files.sort(key=lambda x: os.path.getmtime(
+                        os.path.join("backups", x)),
+                                      reverse=True)
+                    latest_backup = backup_files[0]
+                    latest_time = os.path.getmtime(
+                        os.path.join("backups", latest_backup))
+                    hours_since = (time.time() - latest_time) / 3600
+
+                    if hours_since > 8:  # Alert if no backup for 8+ hours
+                        issues.append(
+                            f"Latest backup is {hours_since:.1f} hours old")
+                        logger.warning(
+                            f"⚠️ [HEALTH-CHECK] Latest backup: {hours_since:.1f} hours ago"
+                        )
+                else:
+                    issues.append("No local backups found")
+                    logger.warning("⚠️ [HEALTH-CHECK] No local backups found")
+            else:
+                issues.append("Backup directory doesn't exist")
+                logger.warning("⚠️ [HEALTH-CHECK] Backup directory missing")
+        except Exception as local_check_error:
+            issues.append(
+                f"Local backup check failed: {str(local_check_error)}")
+
+        # Check GitHub connection
+        if github_backup:
+            github_ok, github_msg = github_backup.test_connection()
+            if not github_ok:
+                issues.append(f"GitHub connection failed: {github_msg}")
+                logger.warning(f"⚠️ [HEALTH-CHECK] GitHub issue: {github_msg}")
+        else:
+            issues.append("GitHub backup not configured")
+
+        # Report health status
+        if issues:
+            logger.warning(f"⚠️ [HEALTH-CHECK] Found {len(issues)} issues:")
+            for issue in issues:
+                logger.warning(f"  - {issue}")
+        else:
+            logger.info("✅ [HEALTH-CHECK] All backup systems healthy")
+
+    except Exception as e:
+        logger.error(f"❌ [HEALTH-CHECK] Health check error: {e}")
 
 
 # ==== Monthly Conversion System ====
@@ -2003,8 +2469,18 @@ async def on_ready():
         monthly_conversion_check.start()
     if not api_health_monitor.is_running():
         api_health_monitor.start()
+    if not backup_health_monitor.is_running():  # Add this line
+        backup_health_monitor.start()
 
     logger.info("✅ All background tasks started")
+
+    # Test GitHub connection on startup
+    if github_backup:
+        github_ok, github_msg = github_backup.test_connection()
+        if github_ok:
+            logger.info("✅ GitHub backup system ready")
+        else:
+            logger.error(f"❌ GitHub backup system issue: {github_msg}")
 
     # Try to create initial backup
     try:
@@ -2693,9 +3169,10 @@ async def sendsp(ctx, member: discord.Member, amount: int):
             color=0xFF0000)
         await ctx.send(embed=error_embed)
 
+
 @bot.command()
 @commands.has_permissions(administrator=True)
-async def restorebackup(ctx, filename: str = None):
+async def restorebackup(ctx, filename: Optional[str] = None):
     """Restore database from a specific backup or cloud backup (GitHub or local)"""
     if filename:
         embed = discord.Embed(
@@ -2708,20 +3185,23 @@ async def restorebackup(ctx, filename: str = None):
 
         embed.add_field(
             name="🛡️ **Safety Measures**",
-            value="```yaml\nCurrent DB: Will be backed up first\nRestore Source: Specific backup file\nRollback: Possible via pre-restore backup\n```",
+            value=
+            "```yaml\nCurrent DB: Will be backed up first\nRestore Source: Specific backup file\nRollback: Possible via pre-restore backup\n```",
             inline=False)
     else:
         embed = discord.Embed(
             title="⚠️ **Restore Confirmation**",
-            description=("```diff\n+ COSMIC DATABASE RESTORATION RITUAL +\n```\n"
-                        "⚠️ *This will replace your current database with the latest backup.*\n"
-                        "🔥 ***ALL CURRENT DATA WILL BE LOST!***\n\n"
-                        "React with ✅ to confirm or ❌ to cancel."),
+            description=
+            ("```diff\n+ COSMIC DATABASE RESTORATION RITUAL +\n```\n"
+             "⚠️ *This will replace your current database with the latest backup.*\n"
+             "🔥 ***ALL CURRENT DATA WILL BE LOST!***\n\n"
+             "React with ✅ to confirm or ❌ to cancel."),
             color=0xFFB800)
 
         embed.add_field(
             name="🛡️ **Safety Measures**",
-            value="```yaml\nCurrent DB: Will be backed up first\nRestore Source: Latest backup (GitHub/Local)\nRollback: Possible via pre-restore backup\n```",
+            value=
+            "```yaml\nCurrent DB: Will be backed up first\nRestore Source: Latest backup (GitHub/Local)\nRollback: Possible via pre-restore backup\n```",
             inline=False)
 
     message = await ctx.send(embed=embed)
@@ -2740,7 +3220,8 @@ async def restorebackup(ctx, filename: str = None):
         if str(reaction.emoji) == "✅":
             embed = discord.Embed(
                 title="🔄 **Restoring Backup...**",
-                description="```css\n[BACKUP RESTORATION IN PROGRESS]\n```\n⚡ *Restoring your specified backup...*",
+                description=
+                "```css\n[BACKUP RESTORATION IN PROGRESS]\n```\n⚡ *Restoring your specified backup...*",
                 color=0xFFAA00)
 
             await message.edit(embed=embed)
@@ -2749,12 +3230,14 @@ async def restorebackup(ctx, filename: str = None):
             if filename:  # If filename is provided, restore from that specific file
                 backup_path = os.path.join("backups", filename)
                 if os.path.isfile(backup_path):
-                    shutil.copy2(backup_path, DB_FILE)  # Restore specific backup
+                    shutil.copy2(backup_path,
+                                 DB_FILE)  # Restore specific backup
                     success = True
                 else:
                     embed = discord.Embed(
                         title="❌ **Restore Failed**",
-                        description=f"```diff\n- Backup file '{filename}' not found.\n```",
+                        description=
+                        f"```diff\n- Backup file '{filename}' not found.\n```",
                         color=0xFF0000)
                     await message.edit(embed=embed)
                     return
@@ -2764,31 +3247,36 @@ async def restorebackup(ctx, filename: str = None):
             if success:
                 embed = discord.Embed(
                     title="✅ **Restore Complete**",
-                    description=("```fix\n◆ DATABASE RESTORATION SUCCESSFUL ◆\n```\n"
-                                 "💎 *Database has been restored from backup!*\n"
-                                 "⚡ ***Bot restart recommended.***"),
+                    description=(
+                        "```fix\n◆ DATABASE RESTORATION SUCCESSFUL ◆\n```\n"
+                        "💎 *Database has been restored from backup!*\n"
+                        "⚡ ***Bot restart recommended.***"),
                     color=0x00FF00)
 
                 embed.add_field(
                     name="🔄 **Next Steps**",
-                    value="```yaml\n1. Bot restart recommended\n2. Verify data integrity\n3. Check all functions\n4. Old DB backed up as pre-restore\n```",
+                    value=
+                    "```yaml\n1. Bot restart recommended\n2. Verify data integrity\n3. Check all functions\n4. Old DB backed up as pre-restore\n```",
                     inline=False)
             else:
                 embed = discord.Embed(
                     title="❌ **Restore Failed**",
-                    description="```diff\n- RESTORATION FAILED\n```\n💀 *Failed to restore from backup. Check logs for details.*",
+                    description=
+                    "```diff\n- RESTORATION FAILED\n```\n💀 *Failed to restore from backup. Check logs for details.*",
                     color=0xFF0000)
 
         else:
             embed = discord.Embed(
                 title="❌ **Restore Cancelled**",
-                description="```css\n[RESTORATION CANCELLED]\n```\n🛡️ *Your current database remains unchanged.*",
+                description=
+                "```css\n[RESTORATION CANCELLED]\n```\n🛡️ *Your current database remains unchanged.*",
                 color=0x808080)
 
     except asyncio.TimeoutError:
         embed = discord.Embed(
             title="⏰ **Timeout**",
-            description="```css\n[RESTORATION TIMEOUT]\n```\n🕐 *No response received. Current database remains unchanged.*",
+            description=
+            "```css\n[RESTORATION TIMEOUT]\n```\n🕐 *No response received. Current database remains unchanged.*",
             color=0x808080)
 
     await message.edit(embed=embed)
