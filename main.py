@@ -3046,31 +3046,35 @@ async def sendsp(ctx, member: discord.Member, amount: int):
             embed = discord.Embed(
                 title="👑 **OWNER ACCESS REQUIRED** 👑",
                 description=(
-                    "``````\n"
-                    "⚡ *This power belongs to the supreme ruler alone...*"),
+                    "```
+                    "⚡ This power belongs to the supreme ruler alone...\n"
+                    "```"),
                 color=0xFF0000)
             result, error = await light_safe_api_call(ctx.send, embed=embed)
             return
 
         # Validate amount
         if amount <= 0:
-            embed = discord.Embed(title="❌ **INVALID AMOUNT** ❌",
-                                  description=("``````"),
-                                  color=0xFF4500)
+            embed = discord.Embed(
+                title="❌ **INVALID AMOUNT** ❌",
+                description="``````",
+                color=0xFF4500)
             result, error = await light_safe_api_call(ctx.send, embed=embed)
             return
 
         if amount > 1000000:
-            embed = discord.Embed(title="⚠️ **AMOUNT TOO LARGE** ⚠️",
-                                  description=("``````"),
-                                  color=0xFF4500)
+            embed = discord.Embed(
+                title="⚠️ **AMOUNT TOO LARGE** ⚠️",
+                description=f"``````",
+                color=0xFF4500)
             result, error = await light_safe_api_call(ctx.send, embed=embed)
             return
 
         if member.bot:
-            embed = discord.Embed(title="🤖 **INVALID TARGET** 🤖",
-                                  description="``````",
-                                  color=0xFF4500)
+            embed = discord.Embed(
+                title="🤖 **INVALID TARGET** 🤖",
+                description="``````",
+                color=0xFF4500)
             result, error = await light_safe_api_call(ctx.send, embed=embed)
             return
 
@@ -3083,9 +3087,10 @@ async def sendsp(ctx, member: discord.Member, amount: int):
         # Update receiver's SP - FIXED: Use await
         success = await update_user_data(receiver_id, sp=new_sp)
         if not success:
-            embed = discord.Embed(title="❌ **DATABASE ERROR** ❌",
-                                  description="``````",
-                                  color=0xFF0000)
+            embed = discord.Embed(
+                title="❌ **DATABASE ERROR** ❌",
+                description="``````",
+                color=0xFF0000)
             result, error = await light_safe_api_call(ctx.send, embed=embed)
             return
 
@@ -3096,34 +3101,48 @@ async def sendsp(ctx, member: discord.Member, amount: int):
         # Success embed
         embed = discord.Embed(
             title="👑 **DIVINE SP BLESSING GRANTED** 👑",
-            description=("``````\n"
-                         "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                         "*✨ The Owner channels raw spiritual energy ✨*"),
+            description=(
+                "```
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "✨ The Owner channels raw spiritual energy ✨\n"
+                "```"),
             color=0x9932CC)
-        embed.add_field(name="👑 **SUPREME OWNER**",
-                        value="``````",
-                        inline=True)
-        embed.add_field(name="🎯 **BLESSED RECIPIENT**",
-                        value="``````",
-                        inline=True)
-        embed.add_field(name="⚡ **SPIRIT POINTS GRANTED**",
-                        value="``````",
-                        inline=False)
-        embed.add_field(name="🔋 **NEW SP BALANCE**",
-                        value="``````",
-                        inline=False)
+
+        embed.add_field(
+            name="👑 **SUPREME OWNER**",
+            value=f"`{ctx.author.display_name}`",
+            inline=True)
+
+        embed.add_field(
+            name="🎯 **BLESSED RECIPIENT**",
+            value=f"`{member.display_name}`",
+            inline=True)
+
+        embed.add_field(
+            name="⚡ **SPIRIT POINTS GRANTED**",
+            value=f"`+{amount:,} SP`",
+            inline=False)
+
+        embed.add_field(
+            name="🔋 **NEW SP BALANCE**",
+            value=f"`{new_sp:,} SP`",
+            inline=False)
+
         embed.set_footer(
             text="👑 Supreme Owner Privilege • Spirit Point Grant System",
             icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
         embed.timestamp = datetime.datetime.now(timezone.utc)
+
         result, error = await safe_api_call(ctx.send, embed=embed)
         if error:
             logger.error(f"❌ Failed to send message: {error}")
+
     except Exception as e:
         logger.error(f"❌ Error in sendsp command: {e}")
-        error_embed = discord.Embed(title="❌ **SYSTEM ERROR** ❌",
-                                    description="``````",
-                                    color=0xFF0000)
+        error_embed = discord.Embed(
+            title="❌ **SYSTEM ERROR** ❌",
+            description=f"``````",
+            color=0xFF0000)
         result, error = await light_safe_api_call(ctx.send, embed=error_embed)
 
 
