@@ -180,6 +180,7 @@ class AsyncCircuitBreaker:
                 self.state = CircuitState.OPEN
                 logger.error("🔴 Circuit breaker OPEN - service failing")
 
+
 class TimedCache:
 
     def __init__(self, ttl_seconds=300):  # 5 minute TTL
@@ -284,8 +285,12 @@ def check_command_cooldown(user_id, command_name):
     user_command_cooldowns[str(user_id)][command_name] = now
     return True, 0
 
-api_circuit_breaker = AsyncCircuitBreaker(failure_threshold=3, timeout=120)  # Critical functions
-light_circuit_breaker = AsyncCircuitBreaker(failure_threshold=5, timeout=30)  # Non-critical functions
+
+api_circuit_breaker = AsyncCircuitBreaker(failure_threshold=3,
+                                          timeout=120)  # Critical functions
+light_circuit_breaker = AsyncCircuitBreaker(
+    failure_threshold=5, timeout=30)  # Non-critical functions
+
 
 # Core API call logic (shared by both breakers)
 async def safe_api_call_internal(func, *args, **kwargs):
@@ -305,13 +310,15 @@ async def safe_api_call_internal(func, *args, **kwargs):
 
         except discord.HTTPException as e:
             if e.status == 429:  # Rate limited
-                retry_after = getattr(e, 'retry_after', base_delay * (2**attempt))
+                retry_after = getattr(e, 'retry_after',
+                                      base_delay * (2**attempt))
                 logger.warning(f"🔄 Rate limited, waiting {retry_after}s")
                 await asyncio.sleep(min(retry_after, 60))
                 continue
             elif e.status >= 500:  # Server errors
                 delay = min(base_delay * (2**attempt), 30)
-                logger.warning(f"🔄 Server error {e.status}, retrying in {delay}s")
+                logger.warning(
+                    f"🔄 Server error {e.status}, retrying in {delay}s")
                 await asyncio.sleep(delay)
                 continue
             elif e.status == 403:  # Forbidden - don't retry
@@ -334,29 +341,38 @@ async def safe_api_call_internal(func, *args, **kwargs):
     logger.error("❌ Max retries exceeded")
     return None, "Max retries exceeded"
 
+
 # Enhanced API call for CRITICAL functions
 async def enhanced_safe_api_call(func, *args, **kwargs):
     """For critical Discord API calls that should trip main circuit breaker."""
     try:
-        return await api_circuit_breaker.call(safe_api_call_internal, func, *args, **kwargs)
+        return await api_circuit_breaker.call(safe_api_call_internal, func,
+                                              *args, **kwargs)
     except Exception as e:
         if "Circuit breaker is OPEN" in str(e):
-            logger.error("❌ API call error: Circuit breaker is OPEN - rejecting request")
+            logger.error(
+                "❌ API call error: Circuit breaker is OPEN - rejecting request"
+            )
             return None, "Service temporarily unavailable"
         logger.error(f"❌ API call failed: {e}")
         return None, str(e)
+
 
 # Light API call for NON-CRITICAL functions (NEW)
 async def light_safe_api_call(func, *args, **kwargs):
     """For non-critical Discord API calls (cooldowns, errors, notifications)."""
     try:
-        return await light_circuit_breaker.call(safe_api_call_internal, func, *args, **kwargs)
+        return await light_circuit_breaker.call(safe_api_call_internal, func,
+                                                *args, **kwargs)
     except Exception as e:
         if "Circuit breaker is OPEN" in str(e):
-            logger.warning("⚠️ Light circuit breaker open - skipping non-critical message")
+            logger.warning(
+                "⚠️ Light circuit breaker open - skipping non-critical message"
+            )
             return None, "Light breaker open"
         logger.warning(f"⚠️ Light API call failed: {e}")
         return None, str(e)
+
 
 # Updated safe_api_call wrapper
 async def safe_api_call(func, *args, **kwargs):
@@ -368,7 +384,6 @@ async def safe_api_call(func, *args, **kwargs):
     discord_api_calls.append(now)
     result, error = await enhanced_safe_api_call(func, *args, **kwargs)
     return result, error
-
 
 
 # Command cooldown decorator
@@ -408,7 +423,8 @@ def cooldown_check(command_name=None):
                     icon_url=ctx.author.avatar.url
                     if ctx.author.avatar else None)
 
-                result, error = await light_safe_api_call(ctx.send, embed=embed)
+                result, error = await light_safe_api_call(ctx.send,
+                                                          embed=embed)
                 if error:
                     logger.error(f"❌ Failed to send cooldown message: {error}")
                 return
@@ -425,7 +441,8 @@ def cooldown_check(command_name=None):
                     "```diff\n- An error occurred while processing your command\n+ Please try again later\n```",
                     color=0xFF0000)
 
-                result, error = await light_safe_api_call(ctx.send, embed=embed)
+                result, error = await light_safe_api_call(ctx.send,
+                                                          embed=embed)
                 if error:
                     logger.error(f"❌ Failed to send error message: {error}")
 
@@ -627,12 +644,9 @@ async def handle_global_error(ctx, error):
     try:
         embed = discord.Embed(
             title="💥 **SYSTEM ERROR**",
-            description=
-            "``````\n🔧 *Please try again in a few moments...*",
+            description="``````\n🔧 *Please try again in a few moments...*",
             color=0xFF1744)
-        embed.add_field(name="🆘 **Error Code**",
-                        value="``````",
-                        inline=True)
+        embed.add_field(name="🆘 **Error Code**", value="``````", inline=True)
         embed.set_footer(
             text="🛠️ If this persists, contact an administrator",
             icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
@@ -643,9 +657,8 @@ async def handle_global_error(ctx, error):
             # Fallback: try sending a simple text message with light breaker
             logger.error(f"❌ Error sending embed: {embed_error}")
             result, text_error = await light_safe_api_call(
-                ctx.send, 
-                "❌ A system error occurred. Please contact an administrator."
-            )
+                ctx.send,
+                "❌ A system error occurred. Please contact an administrator.")
             if text_error:
                 # Ultimate fallback: just log it
                 logger.error(
@@ -655,7 +668,6 @@ async def handle_global_error(ctx, error):
     except Exception as handler_error:
         # Don't let the error handler itself crash the bot
         logger.error(f"❌ Error in global error handler: {handler_error}")
-
 
 
 load_dotenv()
@@ -2554,7 +2566,9 @@ async def on_command_error(ctx, error):
         if similar:
             embed.title = "❓ **UNKNOWN COMMAND**"
             embed.description = f"```diff\n- Command not found\n+ Similar: {', '.join(similar[:3])}\n```"
-            result, error = await light_safe_api_call(ctx.send, embed=embed, delete_after=10)
+            result, error = await light_safe_api_call(ctx.send,
+                                                      embed=embed,
+                                                      delete_after=10)
         return  # Don't show error for unknown commands without suggestions
 
     else:
@@ -2562,7 +2576,9 @@ async def on_command_error(ctx, error):
         embed.description = "```diff\n- An unexpected error occurred\n+ Please try again or contact support\n```"
 
     try:
-        result, error = await light_safe_api_call(ctx.send, embed=embed, delete_after=15)
+        result, error = await light_safe_api_call(ctx.send,
+                                                  embed=embed,
+                                                  delete_after=15)
     except Exception as e:
         logger.exception(f"An unexpected error occurred: {e}")
         # Fallback to simple text if embed fails
@@ -2595,8 +2611,8 @@ async def daily(ctx):
         user_id = str(ctx.author.id)
         now = datetime.datetime.now(timezone.utc)
         user_data = get_user_data(user_id)
-        last_claim = user_data.get("last_claim")
-        streak = user_data.get("streak", 0)
+        last_claim = user_data.get("last_daily")  # Changed
+        streak = user_data.get("daily_streak", 0)  # Changed
         base_reward = 300
         # Check user roles by ID and set reward accordingly
         user_role_ids = [role.id for role in ctx.author.roles]
@@ -2611,6 +2627,7 @@ async def daily(ctx):
             role_bonus = "💎 **BOOSTER BONUS** (+50 SP)"
         else:
             role_bonus = "🔰 **STANDARD RATE**"
+
         if last_claim:
             # FIX: Ensure last_time is timezone-aware
             try:
@@ -2634,7 +2651,8 @@ async def daily(ctx):
                 embed.set_footer(text="⚡ Daily energy recharging...",
                                  icon_url=ctx.author.avatar.url
                                  if ctx.author.avatar else None)
-                result, error = await light_safe_api_call(ctx.send, embed=embed)
+                result, error = await light_safe_api_call(ctx.send,
+                                                          embed=embed)
                 return
             elif delta == 1:
                 streak += 1
@@ -2648,10 +2666,12 @@ async def daily(ctx):
         # Update user data
         old_sp = user_data.get('sp', 0)
         new_sp = old_sp + reward
-        await safe_update_user_data(user_id,
-                                    sp=new_sp,
-                                    last_claim=now.isoformat(),
-                                    streak=streak)
+        await update_user_data(
+            user_id,
+            sp=new_sp,
+            last_daily=now.isoformat(),  # Changed from last_claim
+            daily_streak=streak)  # Changed from streak
+
         # Log transaction
         log_transaction(user_id, "daily_claim", reward, old_sp, new_sp,
                         f"Daily claim with {role_bonus}")
@@ -2659,13 +2679,11 @@ async def daily(ctx):
         bar = ''.join(['🟩' if i < streak else '🟥' for i in range(5)])
         embed = discord.Embed(
             title="⚡ **DAILY ENERGY HARVESTED** ⚡",
-            description=
-            "``````\n💫 *The universe grants you its power...*",
+            description="``````\n💫 *The universe grants you its power...*",
             color=0x8A2BE2 if streak >= 3 else 0x4169E1)
-        embed.add_field(
-            name="🎁 **REWARDS CLAIMED**",
-            value=f"``````\n{role_bonus}",
-            inline=False)
+        embed.add_field(name="🎁 **REWARDS CLAIMED**",
+                        value=f"``````\n{role_bonus}",
+                        inline=False)
         embed.add_field(
             name="🔥 **STREAK PROGRESSION**",
             value=
@@ -2682,7 +2700,8 @@ async def daily(ctx):
             logger.error(f"❌ Failed to send message: {error}")
     except Exception as e:
         logger.error(f"❌ Daily command error: {e}")
-        result, error = await light_safe_api_call(ctx.send, "❌ An error occurred while processing your daily claim.")
+        result, error = await light_safe_api_call(
+            ctx.send, "❌ An error occurred while processing your daily claim.")
 
 
 @bot.command()
@@ -2714,6 +2733,7 @@ async def forceconvert(ctx):
     def check(reaction, user):
         return (user == ctx.author and str(reaction.emoji) in ["✅", "❌"]
                 and reaction.message.id == message.id)
+
     try:
         reaction, user = await bot.wait_for('reaction_add',
                                             timeout=30.0,
@@ -2735,28 +2755,22 @@ async def forceconvert(ctx):
                     description=
                     "``````\n💎 *All spiritual energy has been crystallized!*",
                     color=0x00FF00)
-                embed.add_field(
-                    name="📊 **CONVERSION STATISTICS**",
-                    value=
-                    "``````",
-                    inline=False)
-                embed.add_field(
-                    name="🔧 **ADMINISTRATOR**",
-                    value=
-                    "``````",
-                    inline=True)
+                embed.add_field(name="📊 **CONVERSION STATISTICS**",
+                                value="``````",
+                                inline=False)
+                embed.add_field(name="🔧 **ADMINISTRATOR**",
+                                value="``````",
+                                inline=True)
                 embed.set_footer(
                     text="💫 Manual conversion completed by administrator")
             else:
-                embed = discord.Embed(
-                    title="ℹ️ **NO CONVERSION NEEDED**",
-                    description="``````",
-                    color=0x87CEEB)
+                embed = discord.Embed(title="ℹ️ **NO CONVERSION NEEDED**",
+                                      description="``````",
+                                      color=0x87CEEB)
         else:
             embed = discord.Embed(
                 title="❌ **CONVERSION CANCELLED**",
-                description=
-                "``````\n🛡️ *No changes made to user balances.*",
+                description="``````\n🛡️ *No changes made to user balances.*",
                 color=0x808080)
     except asyncio.TimeoutError:
         embed = discord.Embed(
@@ -2768,6 +2782,7 @@ async def forceconvert(ctx):
     result, error = await safe_api_call(message.edit, embed=embed)
     if error:
         logger.error(f"❌ Failed to edit final forceconvert message: {error}")
+
 
 @bot.command()
 @safe_command_wrapper
@@ -2830,6 +2845,7 @@ async def nextconvert(ctx):
         if error:
             logger.error(f"❌ Failed to send message: {error}")
 
+
 @bot.command()
 @safe_command_wrapper
 @cooldown_check('cloudbackup')
@@ -2859,9 +2875,12 @@ async def cloudbackup(ctx):
                 embed.description = "``````\n☁️ *Transferring cosmic data to the eternal vault...*"
                 result, error = await safe_api_call(message.edit, embed=embed)
                 if error:
-                    logger.error(f"❌ Failed to edit cloudbackup progress message: {error}")
+                    logger.error(
+                        f"❌ Failed to edit cloudbackup progress message: {error}"
+                    )
 
-                success, result_msg = github_backup.upload_backup_to_github(backup_file)
+                success, result_msg = github_backup.upload_backup_to_github(
+                    backup_file)
                 if success:
                     github_success = True
                 else:
@@ -2874,10 +2893,9 @@ async def cloudbackup(ctx):
                 "``````\n💎 *Database backup created and processed!*",
                 color=0x00FF00)
 
-            embed.add_field(
-                name="📁 **Local File**",
-                value="``````",
-                inline=True)
+            embed.add_field(name="📁 **Local File**",
+                            value="``````",
+                            inline=True)
 
             # GitHub status
             if github_success:
@@ -2885,19 +2903,18 @@ async def cloudbackup(ctx):
                                 value="``````",
                                 inline=True)
             else:
-                embed.add_field(
-                    name="☁️ **GitHub Cloud**",
-                    value="``````",
-                    inline=True)
+                embed.add_field(name="☁️ **GitHub Cloud**",
+                                value="``````",
+                                inline=True)
 
             # Database statistics
             _file_size = os.path.getsize(backup_file)
-            embed.add_field(
-                name="📊 **Backup Statistics**",
-                value="``````",
-                inline=False)
+            embed.add_field(name="📊 **Backup Statistics**",
+                            value="``````",
+                            inline=False)
             embed.set_footer(
-                text="💫 Your cosmic data is now safely preserved in the eternal vault",
+                text=
+                "💫 Your cosmic data is now safely preserved in the eternal vault",
                 icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
         else:
             embed = discord.Embed(
@@ -2908,13 +2925,13 @@ async def cloudbackup(ctx):
     except Exception as e:
         embed = discord.Embed(
             title="❌ **Backup Error**",
-            description=
-            f"``````\n💀 *An error occurred: {str(e)[:100]}...*",
+            description=f"``````\n💀 *An error occurred: {str(e)[:100]}...*",
             color=0xFF0000)
 
     result, error = await safe_api_call(message.edit, embed=embed)
     if error:
         logger.error(f"❌ Failed to edit final cloudbackup message: {error}")
+
 
 def validate_discord_input(text, max_length=2000, allow_mentions=False):
     """Validates Discord input to prevent common issues."""
@@ -2926,6 +2943,7 @@ def validate_discord_input(text, max_length=2000, allow_mentions=False):
         return False, "Mentions are not allowed in this input."
     # Add more checks as needed (e.g., profanity filter, disallowed characters)
     return True, None
+
 
 @bot.command()
 @safe_command_wrapper
@@ -2945,20 +2963,17 @@ async def usename(ctx, member: discord.Member, *, new_nickname: str):
 
     # Check if target has nickname lock
     if is_nickname_locked(str(member.id)):
-        embed = discord.Embed(
-            title="🔒 **TARGET PROTECTED**",
-            description=
-            "``````",
-            color=0xFF6347)
+        embed = discord.Embed(title="🔒 **TARGET PROTECTED**",
+                              description="``````",
+                              color=0xFF6347)
         result, error = await light_safe_api_call(ctx.send, embed=embed)
         return
 
     # Check nickname length and validity
     if len(new_nickname) > 32:
-        embed = discord.Embed(
-            title="❌ **NICKNAME TOO LONG**",
-            description="``````",
-            color=0xFF0000)
+        embed = discord.Embed(title="❌ **NICKNAME TOO LONG**",
+                              description="``````",
+                              color=0xFF0000)
         result, error = await light_safe_api_call(ctx.send, embed=embed)
         return
 
@@ -2987,23 +3002,12 @@ async def usename(ctx, member: discord.Member, *, new_nickname: str):
                         f"Used name change card on {member.display_name}")
         embed = discord.Embed(
             title="🃏 **NAME CHANGE CARD ACTIVATED** 🃏",
-            description=
-            "``````\n✨ *Reality bends to your will...*",
+            description="``````\n✨ *Reality bends to your will...*",
             color=0xFF1493)
-        embed.add_field(
-            name="🎯 **TARGET**",
-            value="``````",
-            inline=True)
-        embed.add_field(
-            name="🔄 **NAME CHANGE**",
-            value="``````",
-            inline=True)
-        embed.add_field(name="⏰ **DURATION**",
-                        value="``````",
-                        inline=True)
-        embed.add_field(name="💸 **COST**",
-                        value="``````",
-                        inline=False)
+        embed.add_field(name="🎯 **TARGET**", value="``````", inline=True)
+        embed.add_field(name="🔄 **NAME CHANGE**", value="``````", inline=True)
+        embed.add_field(name="⏰ **DURATION**", value="``````", inline=True)
+        embed.add_field(name="💸 **COST**", value="``````", inline=False)
         embed.set_footer(
             text="🃏 Name will automatically revert after 24 hours",
             icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
@@ -3011,19 +3015,15 @@ async def usename(ctx, member: discord.Member, *, new_nickname: str):
         if error:
             logger.error(f"❌ Failed to send message: {error}")
     except discord.Forbidden:
-        embed = discord.Embed(
-            title="🚫 **PERMISSION DENIED**",
-            description=
-            "``````",
-            color=0xFF0000)
+        embed = discord.Embed(title="🚫 **PERMISSION DENIED**",
+                              description="``````",
+                              color=0xFF0000)
         result, error = await light_safe_api_call(ctx.send, embed=embed)
     except Exception as e:
         logger.error(f"❌ Name change error: {e}")
-        embed = discord.Embed(
-            title="❌ **NAME CHANGE FAILED**",
-            description=
-            "``````",
-            color=0xFF0000)
+        embed = discord.Embed(title="❌ **NAME CHANGE FAILED**",
+                              description="``````",
+                              color=0xFF0000)
         result, error = await light_safe_api_call(ctx.send, embed=embed)
 
 
@@ -3047,26 +3047,23 @@ async def sendsp(ctx, member: discord.Member, amount: int):
 
         # Validate amount
         if amount <= 0:
-            embed = discord.Embed(
-                title="❌ **INVALID AMOUNT** ❌",
-                description=("``````"),
-                color=0xFF4500)
+            embed = discord.Embed(title="❌ **INVALID AMOUNT** ❌",
+                                  description=("``````"),
+                                  color=0xFF4500)
             result, error = await light_safe_api_call(ctx.send, embed=embed)
             return
 
         if amount > 1000000:
-            embed = discord.Embed(
-                title="⚠️ **AMOUNT TOO LARGE** ⚠️",
-                description=("``````"),
-                color=0xFF4500)
+            embed = discord.Embed(title="⚠️ **AMOUNT TOO LARGE** ⚠️",
+                                  description=("``````"),
+                                  color=0xFF4500)
             result, error = await light_safe_api_call(ctx.send, embed=embed)
             return
 
         if member.bot:
-            embed = discord.Embed(
-                title="🤖 **INVALID TARGET** 🤖",
-                description="``````",
-                color=0xFF4500)
+            embed = discord.Embed(title="🤖 **INVALID TARGET** 🤖",
+                                  description="``````",
+                                  color=0xFF4500)
             result, error = await light_safe_api_call(ctx.send, embed=embed)
             return
 
@@ -3079,11 +3076,9 @@ async def sendsp(ctx, member: discord.Member, amount: int):
         # Update receiver's SP - FIXED: Use await
         success = await update_user_data(receiver_id, sp=new_sp)
         if not success:
-            embed = discord.Embed(
-                title="❌ **DATABASE ERROR** ❌",
-                description=
-                "``````",
-                color=0xFF0000)
+            embed = discord.Embed(title="❌ **DATABASE ERROR** ❌",
+                                  description="``````",
+                                  color=0xFF0000)
             result, error = await light_safe_api_call(ctx.send, embed=embed)
             return
 
@@ -3098,15 +3093,12 @@ async def sendsp(ctx, member: discord.Member, amount: int):
                          "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                          "*✨ The Owner channels raw spiritual energy ✨*"),
             color=0x9932CC)
-        embed.add_field(
-            name="👑 **SUPREME OWNER**",
-            value=
-            "``````",
-            inline=True)
-        embed.add_field(
-            name="🎯 **BLESSED RECIPIENT**",
-            value="``````",
-            inline=True)
+        embed.add_field(name="👑 **SUPREME OWNER**",
+                        value="``````",
+                        inline=True)
+        embed.add_field(name="🎯 **BLESSED RECIPIENT**",
+                        value="``````",
+                        inline=True)
         embed.add_field(name="⚡ **SPIRIT POINTS GRANTED**",
                         value="``````",
                         inline=False)
@@ -3122,10 +3114,9 @@ async def sendsp(ctx, member: discord.Member, amount: int):
             logger.error(f"❌ Failed to send message: {error}")
     except Exception as e:
         logger.error(f"❌ Error in sendsp command: {e}")
-        error_embed = discord.Embed(
-            title="❌ **SYSTEM ERROR** ❌",
-            description="``````",
-            color=0xFF0000)
+        error_embed = discord.Embed(title="❌ **SYSTEM ERROR** ❌",
+                                    description="``````",
+                                    color=0xFF0000)
         result, error = await light_safe_api_call(ctx.send, embed=error_embed)
 
 
@@ -3240,6 +3231,7 @@ async def restorebackup(ctx, filename: Optional[str] = None):
 
     await message.edit(embed=embed)
 
+
 @bot.command()
 @safe_command_wrapper
 @cooldown_check('apistatus')
@@ -3261,19 +3253,15 @@ async def apistatus(ctx):
                     recent_commands[command] += 1
         embed = discord.Embed(
             title="📊 **API STATUS DASHBOARD** 📊",
-            description=
-            "``````\n🔧 *Real-time API health monitoring...*",
+            description="``````\n🔧 *Real-time API health monitoring...*",
             color=0x00FF7F if api_percentage < 80 else
             0xFFB347 if api_percentage < 95 else 0xFF0000)
-        embed.add_field(
-            name="🌐 **Discord API Usage**",
-            value=
-            "``````",
-            inline=False)
+        embed.add_field(name="🌐 **Discord API Usage**",
+                        value="``````",
+                        inline=False)
         embed.add_field(
             name="⏰ **Command Cooldowns**",
-            value=
-            f"```yaml\nActive Cooldowns: {active_cooldowns}\n```",
+            value=f"```yaml\nActive Cooldowns: {active_cooldowns}\n```",
             inline=True)
         if recent_commands:
             top_commands = sorted(recent_commands.items(),
@@ -3289,10 +3277,13 @@ async def apistatus(ctx):
             icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
         result, error = await light_safe_api_call(ctx.send, embed=embed)
         if error:
-            result, err = await light_safe_api_call(ctx.send, f"❌ Error displaying API status: {error}")
+            result, err = await light_safe_api_call(
+                ctx.send, f"❌ Error displaying API status: {error}")
     except Exception as e:
         logger.error(f"❌ API status command error: {e}")
-        result, err = await light_safe_api_call(ctx.send, "❌ Failed to retrieve API status.")
+        result, err = await light_safe_api_call(
+            ctx.send, "❌ Failed to retrieve API status.")
+
 
 @bot.command()
 @safe_command_wrapper
@@ -3301,8 +3292,7 @@ async def backupstatus(ctx):
     """Check backup status and list available backups (GitHub + Local)"""
     embed = discord.Embed(
         title="📊 **COSMIC BACKUP STATUS** 📊",
-        description=
-        "``````\n💾 *Examining the preservation of cosmic data...*",
+        description="``````\n💾 *Examining the preservation of cosmic data...*",
         color=0x4169E1)
     try:
         # GitHub backup status
@@ -3312,11 +3302,9 @@ async def backupstatus(ctx):
             if success and github_files:
                 github_backups = github_files[:5]  # Show latest 5
                 _latest_github = github_files[0]
-                embed.add_field(
-                    name="☁️ **GitHub Cloud Storage**",
-                    value=
-                    "``````",
-                    inline=False)
+                embed.add_field(name="☁️ **GitHub Cloud Storage**",
+                                value="``````",
+                                inline=False)
                 # List GitHub backups
                 _github_list = "\n".join(
                     [f"☁️ {backup['name']}" for backup in github_backups])
@@ -3324,16 +3312,13 @@ async def backupstatus(ctx):
                                 value="``````",
                                 inline=True)
             else:
-                embed.add_field(
-                    name="☁️ **GitHub Cloud Storage**",
-                    value="``````",
-                    inline=False)
+                embed.add_field(name="☁️ **GitHub Cloud Storage**",
+                                value="``````",
+                                inline=False)
         else:
-            embed.add_field(
-                name="☁️ **GitHub Cloud Storage**",
-                value=
-                "``````",
-                inline=False)
+            embed.add_field(name="☁️ **GitHub Cloud Storage**",
+                            value="``````",
+                            inline=False)
 
         # Local backup status
         if os.path.exists("backups"):
@@ -3351,11 +3336,9 @@ async def backupstatus(ctx):
                 _total_size = sum(
                     os.path.getsize(os.path.join("backups", f))
                     for f in backup_files)
-                embed.add_field(
-                    name="💾 **Local Storage**",
-                    value=
-                    "``````",
-                    inline=True)
+                embed.add_field(name="💾 **Local Storage**",
+                                value="``````",
+                                inline=True)
                 # List local backups
                 recent_local = backup_files[:5]
                 _local_list = "\n".join(
@@ -3377,11 +3360,9 @@ async def backupstatus(ctx):
             _current_size = os.path.getsize(DB_FILE)
             _current_time = datetime.datetime.fromtimestamp(
                 os.path.getmtime(DB_FILE))
-            embed.add_field(
-                name="🗄️ **Current Database**",
-                value=
-                "``````",
-                inline=False)
+            embed.add_field(name="🗄️ **Current Database**",
+                            value="``````",
+                            inline=False)
     except Exception as e:
         logger.error(f"❌ Backup status error: {e}")
         embed.add_field(
@@ -3395,6 +3376,7 @@ async def backupstatus(ctx):
     result, error = await light_safe_api_call(ctx.send, embed=embed)
     if error:
         logger.error(f"❌ Failed to send message: {error}")
+
 
 @bot.command()
 @safe_command_wrapper
@@ -3422,10 +3404,10 @@ async def ssbal(ctx, member: Optional[discord.Member] = None):
         tier_color = 0x708090
     embed = discord.Embed(
         title=f"💰 **{user.display_name.upper()}'S TREASURY** 💰",
-        description=
-        f"``````\n{tier} • *The crystallized power of ages...*",
+        description=f"``````\n{tier} • *The crystallized power of ages...*",
         color=tier_color)
-    embed.add_field(name="💎 **SPIRIT STONES**",
+    embed.add_field(
+        name="💎 **SPIRIT STONES**",
         value="``````",  # Add actual balance
         inline=True)
     embed.set_thumbnail(url=user.avatar.url if user.avatar else None)
@@ -3434,6 +3416,7 @@ async def ssbal(ctx, member: Optional[discord.Member] = None):
     result, error = await light_safe_api_call(ctx.send, embed=embed)
     if error:
         logger.error(f"❌ Failed to send message: {error}")
+
 
 @bot.command()
 @safe_command_wrapper
@@ -3464,20 +3447,15 @@ async def spbal(ctx, member: Optional[discord.Member] = None):
         description=
         f"``````\n{energy_tier} • *Raw energy flows through your essence...*",
         color=energy_color)
-    embed.add_field(name="⚡ **SPIRIT POINTS**",
-                    value="``````",
-                    inline=True)
-    embed.add_field(
-        name="🔋 **ENERGY FLOW**",
-        value=
-        "``````",
-        inline=False)
+    embed.add_field(name="⚡ **SPIRIT POINTS**", value="``````", inline=True)
+    embed.add_field(name="🔋 **ENERGY FLOW**", value="``````", inline=False)
     embed.set_thumbnail(url=user.avatar.url if user.avatar else None)
     embed.set_footer(
         text=f"🌊 Energy is the source of all creation • {user.display_name}")
     result, error = await light_safe_api_call(ctx.send, embed=embed)
     if error:
         logger.error(f"❌ Failed to send message: {error}")
+
 
 @bot.command()
 @safe_command_wrapper
@@ -3491,11 +3469,9 @@ async def exchange(ctx, amount: str):
         try:
             exchange_amount = int(amount)
         except ValueError:
-            embed = discord.Embed(
-                title="❌ **INVALID INPUT**",
-                description=
-                "``````",
-                color=0xFF0000)
+            embed = discord.Embed(title="❌ **INVALID INPUT**",
+                                  description="``````",
+                                  color=0xFF0000)
             result, error = await light_safe_api_call(ctx.send, embed=embed)
             return
     if exchange_amount <= 0 or exchange_amount > user_data.get("sp", 0):
@@ -3517,25 +3493,21 @@ async def exchange(ctx, amount: str):
                     new_balance, f"Exchanged {exchange_amount} SP to SS")
     embed = discord.Embed(
         title="🔄 **ENERGY TRANSMUTATION COMPLETE** 🔄",
-        description=
-        "``````\n✨ *Energy crystallizes into eternal stone...*",
+        description="``````\n✨ *Energy crystallizes into eternal stone...*",
         color=0x9932CC)
-    embed.add_field(
-        name="⚗️ **CONVERSION RESULT**",
-        value=
-        "``````",
-        inline=False)
-    embed.add_field(
-        name="📊 **UPDATED RESERVES**",
-        value=
-        "``````",
-        inline=False)
+    embed.add_field(name="⚗️ **CONVERSION RESULT**",
+                    value="``````",
+                    inline=False)
+    embed.add_field(name="📊 **UPDATED RESERVES**",
+                    value="``````",
+                    inline=False)
     embed.set_footer(
         text="⚡ Perfect 1:1 conversion rate achieved",
         icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
     result, error = await safe_api_call(ctx.send, embed=embed)
     if error:
         logger.error(f"❌ Failed to send message: {error}")
+
 
 @bot.command()
 @safe_command_wrapper
@@ -3547,8 +3519,7 @@ async def coinflip(ctx, guess: str, amount: str):
     if guess not in ["heads", "tails"]:
         embed = discord.Embed(
             title="⚠️ **INVALID PREDICTION**",
-            description=
-            "``````\n🎯 *Choose your fate wisely, mortal...*",
+            description="``````\n🎯 *Choose your fate wisely, mortal...*",
             color=0xFF6347)
         result, error = await light_safe_api_call(ctx.send, embed=embed)
         return
@@ -3567,11 +3538,9 @@ async def coinflip(ctx, guess: str, amount: str):
         return
     validated_amount = validate_amount(amount, 20000)
     if validated_amount is None:
-        embed = discord.Embed(
-            title="💸 **INVALID WAGER**",
-            description=
-            "``````",
-            color=0xFF0000)
+        embed = discord.Embed(title="💸 **INVALID WAGER**",
+                              description="``````",
+                              color=0xFF0000)
         result, error = await light_safe_api_call(ctx.send, embed=embed)
         return
     if validated_amount == "all":
@@ -3582,8 +3551,8 @@ async def coinflip(ctx, guess: str, amount: str):
         embed = discord.Embed(
             title="🚫 **WAGER REJECTED**",
             description=
-            "``````\n💰 *Maximum bet: 20,000 SP*\n⚡ *Current SP: {:,}*"
-            .format(sp),
+            "``````\n💰 *Maximum bet: 20,000 SP*\n⚡ *Current SP: {:,}*".format(
+                sp),
             color=0xFF4500)
         result, error = await light_safe_api_call(ctx.send, embed=embed)
         return
@@ -3603,9 +3572,7 @@ async def coinflip(ctx, guess: str, amount: str):
         embed.add_field(name="🏆 **VICTORY SPOILS**",
                         value="``````",
                         inline=True)
-        embed.add_field(name="💰 **NEW BALANCE**",
-                        value="``````",
-                        inline=True)
+        embed.add_field(name="💰 **NEW BALANCE**", value="``````", inline=True)
     else:
         new_sp = sp - bet
         await update_user_data(user_id, sp=new_sp)
@@ -3624,17 +3591,16 @@ async def coinflip(ctx, guess: str, amount: str):
                         value="``````",
                         inline=True)
     last_gamble_times[user_id] = now
-    embed.add_field(
-        name="🎯 **PREDICTION vs REALITY**",
-        value=
-        "``````",
-        inline=False)
+    embed.add_field(name="🎯 **PREDICTION vs REALITY**",
+                    value="``````",
+                    inline=False)
     embed.set_footer(
         text="🎰 The cosmic coin never lies • Gamble responsibly",
         icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
     result, error = await safe_api_call(ctx.send, embed=embed)
     if error:
         logger.error(f"❌ Failed to send message: {error}")
+
 
 @bot.command()
 @safe_command_wrapper
@@ -3651,19 +3617,18 @@ async def shop(ctx):
         embed.add_field(
             name=
             f"{index}. {details['desc'].split()[0]} **{item_name.upper()}**",  # Changed here
-            value=
-            f"``````\n*{details['desc'][2:]}*",
+            value=f"``````\n*{details['desc'][2:]}*",
             inline=True)
     embed.add_field(
         name="💳 **PURCHASE INSTRUCTIONS**",
-        value=
-        "``````\n🛒 *Use the command above to claim your artifact*",
+        value="``````\n🛒 *Use the command above to claim your artifact*",
         inline=False)
     embed.set_footer(text="⚡ Spiritual artifacts enhance your cosmic journey",
                      icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
     result, error = await light_safe_api_call(ctx.send, embed=embed)
     if error:
         logger.error(f"❌ Failed to send message: {error}")
+
 
 @bot.command()
 @safe_command_wrapper
@@ -3727,18 +3692,11 @@ async def buy(ctx, item_number: int):
     # Log transaction
     log_transaction(user_id, "shop_purchase", -item_data["price"], balance,
                     new_balance, f"Purchased {item}")
-    embed = discord.Embed(
-        title="✅ **TRANSACTION COMPLETED** ✅",
-        description=
-        f"``````\n{effect}",
-        color=effect_color)
-    embed.add_field(name="🎁 **ARTIFACT CLAIMED**",
-                    value="``````",
-                    inline=True)
-    embed.add_field(
-        name="💰 **COST PAID**",
-        value="``````",
-        inline=True)
+    embed = discord.Embed(title="✅ **TRANSACTION COMPLETED** ✅",
+                          description=f"``````\n{effect}",
+                          color=effect_color)
+    embed.add_field(name="🎁 **ARTIFACT CLAIMED**", value="``````", inline=True)
+    embed.add_field(name="💰 **COST PAID**", value="``````", inline=True)
     embed.add_field(name="💎 **REMAINING BALANCE**",
                     value="``````",
                     inline=True)
@@ -3749,6 +3707,7 @@ async def buy(ctx, item_number: int):
     result, error = await safe_api_call(ctx.send, embed=embed)
     if error:
         logger.error(f"❌ Failed to send message: {error}")
+
 
 @bot.command()
 @safe_command_wrapper
@@ -3765,11 +3724,9 @@ async def givess(ctx, member: discord.Member, amount: int):
             result, error = await light_safe_api_call(ctx.send, embed=embed)
             return
         if amount <= 0:
-            embed = discord.Embed(
-                title="❌ **INVALID AMOUNT** ❌",
-                description=
-                "``````",
-                color=0xFF4500)
+            embed = discord.Embed(title="❌ **INVALID AMOUNT** ❌",
+                                  description="``````",
+                                  color=0xFF4500)
             result, error = await light_safe_api_call(ctx.send, embed=embed)
             return
         receiver_id = str(member.id)
@@ -3779,11 +3736,9 @@ async def givess(ctx, member: discord.Member, amount: int):
         # FIXED: Use await for async function
         success = await update_user_data(receiver_id, balance=new_balance)
         if not success:
-            embed = discord.Embed(
-                title="❌ **DATABASE ERROR** ❌",
-                description=
-                "``````",
-                color=0xFF0000)
+            embed = discord.Embed(title="❌ **DATABASE ERROR** ❌",
+                                  description="``````",
+                                  color=0xFF0000)
             result, error = await light_safe_api_call(ctx.send, embed=embed)
             return
         # Log transaction
@@ -3795,21 +3750,14 @@ async def givess(ctx, member: discord.Member, amount: int):
             description=
             "``````\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n*🌟 The cosmic treasury flows with divine will 🌟*",
             color=0x00FF7F)
-        embed.add_field(
-            name="👑 **ADMINISTRATOR**",
-            value=
-            "``````",
-            inline=True)
-        embed.add_field(
-            name="🎯 **RECIPIENT**",
-            value="``````",
-            inline=True)
+        embed.add_field(name="👑 **ADMINISTRATOR**",
+                        value="``````",
+                        inline=True)
+        embed.add_field(name="🎯 **RECIPIENT**", value="``````", inline=True)
         embed.add_field(name="💰 **AMOUNT GRANTED**",
                         value="``````",
                         inline=False)
-        embed.add_field(name="💎 **NEW BALANCE**",
-                        value="``````",
-                        inline=False)
+        embed.add_field(name="💎 **NEW BALANCE**", value="``````", inline=False)
         embed.set_footer(
             text="⚡ Divine Administrative System ⚡",
             icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
@@ -3821,11 +3769,9 @@ async def givess(ctx, member: discord.Member, amount: int):
         logger.error(f"❌ Critical error in givess: {e}")
         import traceback
         traceback.print_exc()
-        error_embed = discord.Embed(
-            title="❌ **SYSTEM ERROR** ❌",
-            description=
-            "``````",
-            color=0xFF0000)
+        error_embed = discord.Embed(title="❌ **SYSTEM ERROR** ❌",
+                                    description="``````",
+                                    color=0xFF0000)
         result, error = await light_safe_api_call(ctx.send, embed=error_embed)
 
 
@@ -3842,11 +3788,9 @@ async def takess(ctx, member: discord.Member, amount: int):
         result, error = await light_safe_api_call(ctx.send, embed=embed)
         return
     if amount <= 0:
-        embed = discord.Embed(
-            title="❌ **INVALID AMOUNT** ❌",
-            description=
-            "``````",
-            color=0xFF4500)
+        embed = discord.Embed(title="❌ **INVALID AMOUNT** ❌",
+                              description="``````",
+                              color=0xFF4500)
         result, error = await light_safe_api_call(ctx.send, embed=embed)
         return
     target_id = str(member.id)
@@ -3870,17 +3814,9 @@ async def takess(ctx, member: discord.Member, amount: int):
         description=
         "``````\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n*🌑 The cosmic balance demands sacrifice 🌑*",
         color=0xFF1744)
-    embed.add_field(
-        name="👑 **ADMINISTRATOR**",
-        value="``````",
-        inline=True)
-    embed.add_field(
-        name="🎯 **TARGET**",
-        value="``````",
-        inline=True)
-    embed.add_field(name="💸 **AMOUNT REMOVED**",
-                    value="``````",
-                    inline=False)
+    embed.add_field(name="👑 **ADMINISTRATOR**", value="``````", inline=True)
+    embed.add_field(name="🎯 **TARGET**", value="``````", inline=True)
+    embed.add_field(name="💸 **AMOUNT REMOVED**", value="``````", inline=False)
     embed.add_field(name="💔 **REMAINING BALANCE**",
                     value="``````",
                     inline=False)
@@ -3892,6 +3828,7 @@ async def takess(ctx, member: discord.Member, amount: int):
     if error:
         logger.error(f"❌ Failed to send message: {error}")
 
+
 @bot.command()
 @safe_command_wrapper
 @cooldown_check('top')
@@ -3899,8 +3836,7 @@ async def top(ctx):
     leaderboard = get_leaderboard('balance', 10)
     embed = discord.Embed(
         title="🏆 **SPIRIT STONES LEADERBOARD** 🏆",
-        description=
-        "``````\n💎 *The most powerful cultivators in the realm...*",
+        description="``````\n💎 *The most powerful cultivators in the realm...*",
         color=0xFFD700)
     medal_emojis = [
         "🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"
@@ -3918,11 +3854,9 @@ async def top(ctx):
                         value=leaderboard_text,
                         inline=False)
     else:
-        embed.add_field(
-            name="💰 **TOP CULTIVATORS**",
-            value=
-            "``````",
-            inline=False)
+        embed.add_field(name="💰 **TOP CULTIVATORS**",
+                        value="``````",
+                        inline=False)
     embed.set_footer(text="⚡ Power rankings updated in real-time",
                      icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
     result, error = await light_safe_api_call(ctx.send, embed=embed)
@@ -3963,17 +3897,14 @@ async def lucky(ctx):
         value=
         f"``````\n💫 **Total Elite SP:** {total_sp:,}\n*The accumulated power of the realm's elite...*",
         inline=False)
-    embed.add_field(
-        name="🔮 **FORTUNE INSIGHT**",
-        value=
-        "``````",
-        inline=False)
+    embed.add_field(name="🔮 **FORTUNE INSIGHT**", value="``````", inline=False)
     embed.set_footer(
         text="🍀 The universe reveals its secrets to those who seek",
         icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
     result, error = await light_safe_api_call(ctx.send, embed=embed)
     if error:
         logger.error(f"❌ Failed to send message: {error}")
+
 
 @bot.command()
 @safe_command_wrapper
@@ -3985,14 +3916,11 @@ async def unlucky(ctx):
     if not top_losers:
         embed = discord.Embed(
             title="🌟 **BLESSED MONTH** 🌟",
-            description=
-            "``````\n✨ *The void has been merciful this month...*",
+            description="``````\n✨ *The void has been merciful this month...*",
             color=0x32CD32)
-        embed.add_field(
-            name="🛡️ **COSMIC PROTECTION**",
-            value=
-            "``````",
-            inline=False)
+        embed.add_field(name="🛡️ **COSMIC PROTECTION**",
+                        value="``````",
+                        inline=False)
         embed.set_footer(
             text=
             f"📅 {datetime.datetime.now(timezone.utc).strftime('%B %Y')} • Keep the luck flowing!",
@@ -4021,8 +3949,7 @@ async def unlucky(ctx):
                         inline=False)
     embed.add_field(
         name="🌑 **TOTAL DEVASTATION**",
-        value=
-        "``````\n*The accumulated suffering feeds the endless void...*",
+        value="``````\n*The accumulated suffering feeds the endless void...*",
         inline=False)
     # Calculate average loss and provide insight
     average_loss = total_losses // len(top_losers) if top_losers else 0
@@ -4043,11 +3970,7 @@ async def unlucky(ctx):
         value=
         f"``````\n{void_status}\nAverage Loss: {average_loss:,} SP\nThreat Level: {status_color}",
         inline=False)
-    embed.add_field(
-        name="⚠️ **COSMIC WARNING**",
-        value=
-        "``````",
-        inline=False)
+    embed.add_field(name="⚠️ **COSMIC WARNING**", value="``````", inline=False)
     embed.set_footer(
         text=
         f"💀 Monthly Misfortune Report • {datetime.datetime.now(timezone.utc).strftime('%B %Y')}",
@@ -4056,14 +3979,14 @@ async def unlucky(ctx):
     if error:
         logger.error(f"❌ Failed to send message: {error}")
 
+
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def emergency_repair(ctx):
     """Emergency database repair command"""
     embed = discord.Embed(
         title="🚨 **EMERGENCY DATABASE REPAIR** 🚨",
-        description=
-        "``````\n⚠️ *Attempting to repair database corruption...*",
+        description="``````\n⚠️ *Attempting to repair database corruption...*",
         color=0xFF6B00)
 
     result, error = await safe_api_call(ctx.send, embed=embed)
@@ -4081,7 +4004,8 @@ async def emergency_repair(ctx):
             embed.description = "``````"
             result, error = await safe_api_call(message.edit, embed=embed)
             if error:
-                logger.error(f"❌ Failed to edit emergency repair message: {error}")
+                logger.error(
+                    f"❌ Failed to edit emergency repair message: {error}")
 
             # Attempt repair
             if await repair_database():
@@ -4092,7 +4016,8 @@ async def emergency_repair(ctx):
                 embed.description = "``````"
                 result, error = await safe_api_call(message.edit, embed=embed)
                 if error:
-                    logger.error(f"❌ Failed to edit emergency repair message: {error}")
+                    logger.error(
+                        f"❌ Failed to edit emergency repair message: {error}")
 
                 if await restore_from_latest_backup():
                     embed.description = "``````"
@@ -4103,7 +4028,8 @@ async def emergency_repair(ctx):
 
         result, error = await safe_api_call(message.edit, embed=embed)
         if error:
-            logger.error(f"❌ Failed to edit final emergency repair message: {error}")
+            logger.error(
+                f"❌ Failed to edit final emergency repair message: {error}")
 
     except Exception as e:
         logger.error(f"❌ Emergency repair failed: {e}")
@@ -4111,7 +4037,9 @@ async def emergency_repair(ctx):
         embed.color = 0xFF0000
         result, error = await safe_api_call(message.edit, embed=embed)
         if error:
-            logger.error(f"❌ Failed to edit emergency repair error message: {error}")
+            logger.error(
+                f"❌ Failed to edit emergency repair error message: {error}")
+
 
 @bot.command()
 @commands.has_permissions(administrator=True)
@@ -4126,9 +4054,11 @@ async def errortest(ctx, error_type: str = "generic"):
             commands.Parameter("test",
                                commands.Parameter.POSITIONAL_OR_KEYWORD))
     else:
-        result, error = await light_safe_api_call(ctx.send, "Available error types: generic, permission, argument")
+        result, error = await light_safe_api_call(
+            ctx.send, "Available error types: generic, permission, argument")
         if error:
             logger.error(f"❌ Failed to send errortest message: {error}")
+
 
 @bot.command()
 @safe_command_wrapper
@@ -4173,11 +4103,7 @@ async def lose(ctx, member: Optional[discord.Member] = None):
     embed.add_field(name="🏆 **GAINS FROM FORTUNE**",
                     value="``````",
                     inline=True)
-    embed.add_field(
-        name="⚖️ **NET RESULT**",
-        value=
-        "``````",
-        inline=False)
+    embed.add_field(name="⚖️ **NET RESULT**", value="``````", inline=False)
     # Loss ratio calculation
     total_gambled = wins + losses
     if total_gambled > 0:
@@ -4204,6 +4130,7 @@ async def lose(ctx, member: Optional[discord.Member] = None):
     if error:
         logger.error(f"❌ Failed to send message: {error}")
 
+
 @bot.command()
 @safe_command_wrapper
 @cooldown_check('help')
@@ -4211,8 +4138,7 @@ async def help(ctx):
     """Display all available commands"""
     embed = discord.Embed(
         title="📚 **GU CHANG'S CULTIVATION MANUAL** 📚",
-        description=
-        "``````\n⚡ *Master these commands to ascend in power...*",
+        description="``````\n⚡ *Master these commands to ascend in power...*",
         color=0x9932CC)
     # Economy Commands
     embed.add_field(name="💰 **ECONOMY COMMANDS**",
@@ -4268,10 +4194,12 @@ Streak Bonus: 2x reward at 5-day streak
     if error:
         logger.error(f"❌ Failed to send message: {error}")
 
+
 # ==== Flask Thread ====
 def run_flask():
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)
+
 
 # == Main Execution ==
 if __name__ == "__main__":
@@ -4301,17 +4229,21 @@ if __name__ == "__main__":
             error_msg = str(e).lower()
 
             # Don't restart for authentication errors
-            if any(auth_error in error_msg for auth_error in 
+            if any(auth_error in error_msg for auth_error in
                    ['401', 'unauthorized', 'invalid token', 'login failure']):
-                logger.error("❌ Authentication error - check your Discord bot token")
-                logger.error("🔧 Fix your token in environment variables and redeploy")
+                logger.error(
+                    "❌ Authentication error - check your Discord bot token")
+                logger.error(
+                    "🔧 Fix your token in environment variables and redeploy")
                 break
 
             # Don't restart for rate limiting - wait longer
             elif '429' in error_msg or 'rate limit' in error_msg:
                 if restart_attempt < max_restart_attempts - 1:
                     rate_limit_delay = 300  # 5 minutes for rate limiting
-                    logger.error(f"❌ Rate limited - waiting {rate_limit_delay}s before retry")
+                    logger.error(
+                        f"❌ Rate limited - waiting {rate_limit_delay}s before retry"
+                    )
                     time.sleep(rate_limit_delay)
                 else:
                     logger.error("❌ Persistent rate limiting - stopping bot")
