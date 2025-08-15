@@ -1,0 +1,157 @@
+@bot.command()
+@safe_command_wrapper
+@cooldown_check('exchange')
+async def exchange(ctx, amount: str):
+    user_id = str(ctx.author.id)
+    user_data = get_user_data(user_id)
+
+    if amount.lower() == "all":
+        exchange_amount = user_data.get("sp", 0)
+    else:
+        try:
+            exchange_amount = int(amount)
+        except ValueError:
+            embed = discord.Embed(title="❌ **INVALID INPUT**",
+                                  description="``````",
+                                  color=0xFF0000)
+            result, error = await light_safe_api_call(ctx.send, embed=embed)
+            return
+
+    if exchange_amount <= 0 or exchange_amount > user_data.get("sp", 0):
+        embed = discord.Embed(
+            title="🚫 **INSUFFICIENT ENERGY**",
+            description=f"``````\n💔 *Your spiritual energy reserves are inadequate for this conversion...*",
+            color=0xFF4500)
+        result, error = await light_safe_api_call(ctx.send, embed=embed)
+        return
+
+    # Update balances
+    old_sp = user_data.get('sp', 0)
+    old_balance = user_data.get('balance', 0)
+    new_sp = old_sp - exchange_amount
+    new_balance = old_balance + exchange_amount
+    await update_user_data(user_id, balance=new_balance, sp=new_sp)
+
+    # Log transaction
+    log_transaction(user_id, "exchange", exchange_amount, old_balance,
+                    new_balance, f"Exchanged {exchange_amount} SP to SS")
+
+    embed = discord.Embed(
+        title="🔄 **ENERGY TRANSMUTATION COMPLETE** 🔄",
+        description="``````",
+        color=0x9932CC)
+
+    embed.add_field(name="⚗️ **CONVERSION RESULT**",
+                    value=f"`{exchange_amount:,} SP` → `{exchange_amount:,} SS`",
+                    inline=False)
+    embed.add_field(name="📊 **UPDATED RESERVES**",
+                    value=f"**SP:** `{new_sp:,}`\n**SS:** `{new_balance:,}`",
+                    inline=False)
+
+    embed.set_footer(
+        text="⚡ Perfect 1:1 conversion rate achieved",
+        icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
+
+    result, error = await safe_api_call(ctx.send, embed=embed)
+    if error:
+        logger.error(f"❌ Failed to send message: {error}")
+
+
+@bot.command()
+@safe_command_wrapper
+@cooldown_check('coinflip')
+async def coinflip(ctx, guess: str, amount: str):
+    now = datetime.datetime.now(timezone.utc)
+    user_id = str(ctx.author.id)
+    guess = guess.lower()
+
+    if guess not in ["heads", "tails"]:
+        embed = discord.Embed(
+            title="⚠️ **INVALID PREDICTION**",
+            description="``````",
+            color=0xFF6347)
+        result, error = await light_safe_api_call(ctx.send, embed=embed)
+        return
+
+    user_data = get_user_data(user_id)
+    sp = user_data.get("sp", 0)
+
+    if user_id in last_gamble_times and (
+            now - last_gamble_times[user_id]).total_seconds() < 60:
+        remaining = 60 - int((now - last_gamble_times[user_id]).total_seconds())
+        embed = discord.Embed(
+            title="⏳ **COSMIC COOLDOWN**",
+            description=f"``````",
+            color=0x4682B4)
+        embed.set_footer(
+            text="⚡ Gambling cooldown: 60 seconds between attempts")
+        result, error = await light_safe_api_call(ctx.send, embed=embed)
+        return
+
+    validated_amount = validate_amount(amount, 20000)
+    if validated_amount is None:
+        embed = discord.Embed(title="💸 **INVALID WAGER**",
+                              description="``````",
+                              color=0xFF0000)
+        result, error = await light_safe_api_call(ctx.send, embed=embed)
+        return
+
+    if validated_amount == "all":
+        bet = min(sp, 20000)
+    else:
+        bet = validated_amount
+
+    if bet <= 0 or bet > 20000 or bet > sp:
+        embed = discord.Embed(
+            title="🚫 **WAGER REJECTED**",
+            description=f"``````",
+            color=0xFF4500)
+        result, error = await light_safe_api_call(ctx.send, embed=embed)
+        return
+
+    flip = random.choice(["heads", "tails"])
+    won = (flip == guess)
+
+    if won:
+        new_sp = sp + bet
+        await update_user_data(user_id, sp=new_sp)
+        update_monthly_stats(user_id, win_amount=bet)
+        log_transaction(user_id, "gambling_win", bet, sp, new_sp,
+                        f"Coinflip win: {flip}")
+        embed = discord.Embed(
+            title="🎉 **FATE SMILES UPON YOU** 🎉",
+            description=f"``````",
+            color=0x00FF00)
+        embed.add_field(name="🏆 **VICTORY SPOILS**",
+                        value=f"`+{bet:,} SP`",
+                        inline=True)
+        embed.add_field(name="💰 **NEW BALANCE**", value=f"`{new_sp:,} SP`", inline=True)
+    else:
+        new_sp = sp - bet
+        await update_user_data(user_id, sp=new_sp)
+        update_monthly_stats(user_id, loss_amount=bet)
+        log_transaction(user_id, "gambling_loss", -bet, sp, new_sp,
+                        f"Coinflip loss: {flip}")
+        embed = discord.Embed(
+            title="💀 **THE VOID CLAIMS ITS DUE** 💀",
+            description=f"``````",
+            color=0xFF0000)
+        embed.add_field(name="💸 **LOSSES SUFFERED**",
+                        value=f"`-{bet:,} SP`",
+                        inline=True)
+        embed.add_field(name="💔 **REMAINING BALANCE**",
+                        value=f"`{new_sp:,} SP`",
+                        inline=True)
+
+    last_gamble_times[user_id] = now
+    embed.add_field(name="🎯 **PREDICTION vs REALITY**",
+                    value=f"Your guess: `{guess.title()}`\nResult: `{flip.title()}`",
+                    inline=False)
+
+    embed.set_footer(
+        text="🎰 The cosmic coin never lies • Gamble responsibly",
+        icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
+
+    result, error = await safe_api_call(ctx.send, embed=embed)
+    if error:
+        logger.error(f"❌ Failed to send message: {error}")
