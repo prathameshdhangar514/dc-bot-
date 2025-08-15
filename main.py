@@ -2546,7 +2546,7 @@ async def on_command_error(ctx, error):
 
     if isinstance(error, commands.MissingPermissions):
         embed.title = "🚫 **INSUFFICIENT PERMISSIONS**"
-        embed.description = "```diff\n- Administrator access required\n```"
+        embed.description = f"```diff\n- Administrator access required\n```"
 
     elif isinstance(error, commands.MissingRequiredArgument):
         embed.title = "❌ **MISSING ARGUMENT**"
@@ -2554,7 +2554,7 @@ async def on_command_error(ctx, error):
 
     elif isinstance(error, commands.BadArgument):
         embed.title = "⚠️ **INVALID ARGUMENT**"
-        embed.description = "```diff\n- Check your input format\n+ Use !help for examples\n```"
+        embed.description = f"```diff\n- Check your input format\n+ Use !help for examples\n```"
 
     elif isinstance(error, commands.CommandNotFound):
         # Suggest similar commands
@@ -2611,97 +2611,104 @@ async def daily(ctx):
         user_id = str(ctx.author.id)
         now = datetime.datetime.now(timezone.utc)
         user_data = get_user_data(user_id)
-        last_claim = user_data.get("last_daily")  # Changed
-        streak = user_data.get("daily_streak", 0)  # Changed
+
+        last_claim = user_data.get("last_daily")     # renamed field
+        streak = user_data.get("daily_streak", 0)
         base_reward = 300
-        # Check user roles by ID and set reward accordingly
-        user_role_ids = [role.id for role in ctx.author.roles]
-        if ROLE_ID_ADMIN in user_role_ids:
-            base_reward = 400
-            role_bonus = "👑 **ADMIN BLESSING** (+100 SP)"
-        elif ROLE_ID_HMW in user_role_ids:
-            base_reward = 350
-            role_bonus = "⚡ **HMW PRIVILEGE** (+50 SP)"
-        elif ROLE_ID_BOOSTER in user_role_ids:
-            base_reward = 350
-            role_bonus = "💎 **BOOSTER BONUS** (+50 SP)"
+
+        # ── role bonus ─────────────────────────────────────────────
+        role_ids = [r.id for r in ctx.author.roles]
+        if ROLE_ID_ADMIN in role_ids:
+            base_reward, role_bonus = 400, "👑 **ADMIN BLESSING** `+100 SP`"
+        elif ROLE_ID_HMW in role_ids:
+            base_reward, role_bonus = 350, "⚡ **HMW PRIVILEGE** `+50 SP`"
+        elif ROLE_ID_BOOSTER in role_ids:
+            base_reward, role_bonus = 350, "💎 **BOOSTER BONUS** `+50 SP`"
         else:
             role_bonus = "🔰 **STANDARD RATE**"
 
+        # ── cooldown / streak calc ────────────────────────────────
         if last_claim:
-            # FIX: Ensure last_time is timezone-aware
             try:
                 last_time = datetime.datetime.fromisoformat(last_claim)
-                # If the datetime doesn't have timezone info, assume UTC
                 if last_time.tzinfo is None:
                     last_time = last_time.replace(tzinfo=timezone.utc)
-            except ValueError:
-                # Handle old datetime format without timezone
-                last_time = datetime.datetime.strptime(last_claim,
-                                                       "%Y-%m-%d %H:%M:%S.%f")
-                last_time = last_time.replace(tzinfo=timezone.utc)
-            delta = (now - last_time).days
-            if delta == 0:
-                #remaining = 24 - (now - last_time).seconds // 3600
+            except ValueError:                                      # legacy format
+                last_time = datetime.datetime.strptime(
+                    last_claim, "%Y-%m-%d %H:%M:%S.%f"
+                ).replace(tzinfo=timezone.utc)
+
+            if (now - last_time).days == 0:
+                remaining = 24 - (now - last_time).seconds // 3600
                 embed = discord.Embed(
                     title="⏰ **TEMPORAL LOCK ACTIVE**",
-                    description=
-                    "``````\n🌟 *The cosmic energy needs time to flow through your soul...*",
-                    color=0x2B2D42)
-                embed.set_footer(text="⚡ Daily energy recharging...",
-                                 icon_url=ctx.author.avatar.url
-                                 if ctx.author.avatar else None)
-                result, error = await light_safe_api_call(ctx.send,
-                                                          embed=embed)
+                    description=f"``````",
+                    color=0x2B2D42,
+                )
+                embed.set_footer(text="Daily energy re-charging …")
+                await light_safe_api_call(ctx.send, embed=embed)
                 return
-            elif delta == 1:
+            elif (now - last_time).days == 1:
                 streak += 1
             else:
                 streak = 1
         else:
             streak = 1
+
+        # ── reward & state update ─────────────────────────────────
         reward = base_reward * 2 if streak == 5 else base_reward
-        if streak == 5:
+        if streak == 5:                                             # reset on payout
             streak = 0
-        # Update user data
-        old_sp = user_data.get('sp', 0)
+
+        old_sp = user_data.get("sp", 0)
         new_sp = old_sp + reward
         await update_user_data(
             user_id,
             sp=new_sp,
-            last_daily=now.isoformat(),  # Changed from last_claim
-            daily_streak=streak)  # Changed from streak
+            last_daily=now.isoformat(),
+            daily_streak=streak,
+        )
+        log_transaction(
+            user_id, "daily_claim", reward, old_sp, new_sp,
+            f"Daily claim • {role_bonus}"
+        )
 
-        # Log transaction
-        log_transaction(user_id, "daily_claim", reward, old_sp, new_sp,
-                        f"Daily claim with {role_bonus}")
-        # Progress bar: green for completed streak days, red for remaining
-        bar = ''.join(['🟩' if i < streak else '🟥' for i in range(5)])
+        # ── embed output ──────────────────────────────────────────
+        bar = ''.join('🟩' if i < streak else '🟥' for i in range(5))
+
         embed = discord.Embed(
             title="⚡ **DAILY ENERGY HARVESTED** ⚡",
-            description="``````\n💫 *The universe grants you its power...*",
-            color=0x8A2BE2 if streak >= 3 else 0x4169E1)
-        embed.add_field(name="🎁 **REWARDS CLAIMED**",
-                        value=f"``````\n{role_bonus}",
-                        inline=False)
+            description=f"``````",
+            color=0x8A2BE2 if streak >= 3 else 0x4169E1,
+        )
         embed.add_field(
-            name="🔥 **STREAK PROGRESSION**",
-            value=
-            f"{bar} `{streak}/5`\n{'🌟 *STREAK BONUS ACTIVE!*' if streak >= 3 else '💪 *Keep the momentum going!*'}",
-            inline=False)
-        embed.set_thumbnail(
-            url=ctx.author.avatar.url if ctx.author.avatar else None)
+            name="🎁 **REWARD BREAKDOWN**",
+            value=f"{role_bonus}",
+            inline=False,
+        )
+        embed.add_field(
+            name="🔥 **STREAK**",
+            value=f"{bar}  `{streak}/5`",
+            inline=False,
+        )
+        embed.add_field(
+            name="💰 **NEW SP BALANCE**",
+            value=f"`{new_sp:,} SP`",
+            inline=False,
+        )
+        embed.set_thumbnail(url=ctx.author.avatar.url if ctx.author.avatar else None)
         embed.set_footer(
-            text=
-            f"⚡ Next claim available in 24 hours • {ctx.author.display_name}",
-            icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
-        result, error = await safe_api_call(ctx.send, embed=embed)
-        if error:
-            logger.error(f"❌ Failed to send message: {error}")
+            text="Next claim in 24 h",
+            icon_url=ctx.guild.icon.url if ctx.guild.icon else None,
+        )
+        await safe_api_call(ctx.send, embed=embed)
+
     except Exception as e:
-        logger.error(f"❌ Daily command error: {e}")
-        result, error = await light_safe_api_call(
-            ctx.send, "❌ An error occurred while processing your daily claim.")
+        logger.error(f"daily() error: {e}")
+        await light_safe_api_call(
+            ctx.send,
+            "❌ An error occurred while processing your daily claim."
+        )
 
 
 @bot.command()
