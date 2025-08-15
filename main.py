@@ -2546,7 +2546,7 @@ async def on_command_error(ctx, error):
 
     if isinstance(error, commands.MissingPermissions):
         embed.title = "🚫 **INSUFFICIENT PERMISSIONS**"
-        embed.description = f"```diff\n- Administrator access required\n```"
+        embed.description = "```diff\n- Administrator access required\n```"
 
     elif isinstance(error, commands.MissingRequiredArgument):
         embed.title = "❌ **MISSING ARGUMENT**"
@@ -2554,7 +2554,7 @@ async def on_command_error(ctx, error):
 
     elif isinstance(error, commands.BadArgument):
         embed.title = "⚠️ **INVALID ARGUMENT**"
-        embed.description = f"```diff\n- Check your input format\n+ Use !help for examples\n```"
+        embed.description = "```diff\n- Check your input format\n+ Use !help for examples\n```"
 
     elif isinstance(error, commands.CommandNotFound):
         # Suggest similar commands
