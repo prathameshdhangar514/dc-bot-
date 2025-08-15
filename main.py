@@ -3476,7 +3476,7 @@ async def spbal(ctx, member: Optional[discord.Member] = None):
 
     embed = discord.Embed(
         title=f"⚡ **{user.display_name.upper()}'S ENERGY CORE** ⚡",
-        description=f"``````",
+        description="``````",
         color=energy_color)
 
     embed.add_field(name="⚡ **SPIRIT POINTS**", value=f"`{sp:,} SP`", inline=True)
