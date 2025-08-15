@@ -1,0 +1,47 @@
+# Create base embed for all errors
+    embed = discord.Embed(color=0xFF0000)
+
+    if isinstance(error, commands.MissingPermissions):
+        embed.title = "🚫 **INSUFFICIENT PERMISSIONS**"
+        embed.description = f"```diff\n- Administrator access required\n```"
+
+    elif isinstance(error, commands.MissingRequiredArgument):
+        embed.title = "❌ **MISSING ARGUMENT**"
+        embed.description = f"```diff\n- Missing: {error.param.name}\n+ Use !help for examples\n```"
+
+    elif isinstance(error, commands.BadArgument):
+        embed.title = "⚠️ **INVALID ARGUMENT**"
+        embed.description = f"```diff\n- Check your input format\n+ Use !help for examples\n```"
+
+    elif isinstance(error, commands.CommandNotFound):
+        # Suggest similar commands
+        available_commands = [cmd.name for cmd in bot.commands]
+        similar = [
+            cmd for cmd in available_commands if error.args[0].lower() in cmd
+        ]
+
+        if similar:
+            embed.title = "❓ **UNKNOWN COMMAND**"
+            embed.description = f"```diff\n- Command not found\n+ Similar: {', '.join(similar[:3])}\n```"
+            result, error = await light_safe_api_call(ctx.send,
+                                                      embed=embed,
+                                                      delete_after=10)
+        return  # Don't show error for unknown commands without suggestions
+
+    else:
+        embed.title = "💥 **SYSTEM ERROR**"
+        embed.description = "```diff\n- An unexpected error occurred\n+ Please try again or contact support\n```"
+
+    try:
+        result, error = await light_safe_api_call(ctx.send,
+                                                  embed=embed,
+                                                  delete_after=15)
+    except Exception as e:
+        logger.exception(f"An unexpected error occurred: {e}")
+        # Fallback to simple text if embed fails
+        try:
+            await ctx.send("❌ An error occurred. Please try again.",
+                           delete_after=10)
+        except Exception as e:
+            logger.exception(f"An unexpected error occurred: {e}")
+            pass  # Ultimate fallback - just log it
