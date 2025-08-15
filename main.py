@@ -3383,10 +3383,11 @@ async def backupstatus(ctx):
                 "``````",
                 inline=False)
     except Exception as e:
+        logger.error(f"❌ Backup status error: {e}")
         embed.add_field(
             name="❌ **Error**",
             value=
-            "``````",
+            f"``````\n💀 *Failed to retrieve backup status: {str(e)[:100]}...*",
             inline=False)
 
     embed.set_footer(text="💫 Regular backups ensure cosmic data preservation",
