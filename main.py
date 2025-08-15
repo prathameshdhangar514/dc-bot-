@@ -3448,8 +3448,6 @@ async def ssbal(ctx, member: Optional[discord.Member] = None):
     if error:
         logger.error(f"❌ Failed to send message: {error}")
 
-
-
 @bot.command()
 @safe_command_wrapper
 @cooldown_check('spbal')

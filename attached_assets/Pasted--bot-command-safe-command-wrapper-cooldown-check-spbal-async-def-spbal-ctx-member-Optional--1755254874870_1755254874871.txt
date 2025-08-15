@@ -1,0 +1,100 @@
+@bot.command()
+@safe_command_wrapper
+@cooldown_check('spbal')
+async def spbal(ctx, member: Optional[discord.Member] = None):
+    user = member or ctx.author
+    user_id = str(user.id)
+    user_data = get_user_data(user_id)
+    sp = user_data.get("sp", 0)
+
+    # Energy tier determination
+    if sp >= 50000:
+        energy_tier = "⚡ **STORM**"
+        energy_color = 0xFF1493
+    elif sp >= 25000:
+        energy_tier = "🔥 **INFERNO**"
+        energy_color = 0xFF4500
+    elif sp >= 10000:
+        energy_tier = "💫 **RADIANT**"
+        energy_color = 0x8A2BE2
+    elif sp >= 2000:
+        energy_tier = "🌟 **BRIGHT**"
+        energy_color = 0x4169E1
+    else:
+        energy_tier = "✨ **SPARK**"
+        energy_color = 0x20B2AA
+
+    embed = discord.Embed(
+        title=f"⚡ **{user.display_name.upper()}'S ENERGY CORE** ⚡",
+        description=f"``````",
+        color=energy_color)
+
+    embed.add_field(name="⚡ **SPIRIT POINTS**", value=f"`{sp:,} SP`", inline=True)
+    embed.add_field(name="🔋 **ENERGY FLOW**", value=f"*Current tier: {energy_tier}*", inline=False)
+
+    embed.set_thumbnail(url=user.avatar.url if user.avatar else None)
+    embed.set_footer(
+        text=f"🌊 Energy is the source of all creation • {user.display_name}")
+
+    result, error = await light_safe_api_call(ctx.send, embed=embed)
+    if error:
+        logger.error(f"❌ Failed to send message: {error}")
+
+
+@bot.command()
+@safe_command_wrapper
+@cooldown_check('exchange')
+async def exchange(ctx, amount: str):
+    user_id = str(ctx.author.id)
+    user_data = get_user_data(user_id)
+
+    if amount.lower() == "all":
+        exchange_amount = user_data.get("sp", 0)
+    else:
+        try:
+            exchange_amount = int(amount)
+        except ValueError:
+            embed = discord.Embed(title="❌ **INVALID INPUT**",
+                                  description="``````",
+                                  color=0xFF0000)
+            result, error = await light_safe_api_call(ctx.send, embed=embed)
+            return
+
+    if exchange_amount <= 0 or exchange_amount > user_data.get("sp", 0):
+        embed = discord.Embed(
+            title="🚫 **INSUFFICIENT ENERGY**",
+            description=f"``````\n💔 *Your spiritual energy reserves are inadequate for this conversion...*",
+            color=0xFF4500)
+        result, error = await light_safe_api_call(ctx.send, embed=embed)
+        return
+
+    # Update balances
+    old_sp = user_data.get('sp', 0)
+    old_balance = user_data.get('balance', 0)
+    new_sp = old_sp - exchange_amount
+    new_balance = old_balance + exchange_amount
+    await update_user_data(user_id, balance=new_balance, sp=new_sp)
+
+    # Log transaction
+    log_transaction(user_id, "exchange", exchange_amount, old_balance,
+                    new_balance, f"Exchanged {exchange_amount} SP to SS")
+
+    embed = discord.Embed(
+        title="🔄 **ENERGY TRANSMUTATION COMPLETE** 🔄",
+        description="``````",
+        color=0x9932CC)
+
+    embed.add_field(name="⚗️ **CONVERSION RESULT**",
+                    value=f"`{exchange_amount:,} SP` → `{exchange_amount:,} SS`",
+                    inline=False)
+    embed.add_field(name="📊 **UPDATED RESERVES**",
+                    value=f"**SP:** `{new_sp:,}`\n**SS:** `{new_balance:,}`",
+                    inline=False)
+
+    embed.set_footer(
+        text="⚡ Perfect 1:1 conversion rate achieved",
+        icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
+
+    result, error = await safe_api_call(ctx.send, embed=embed)
+    if error:
+        logger.error(f"❌ Failed to send message: {error}")
