@@ -3432,12 +3432,17 @@ async def ssbal(ctx, member: Optional[discord.Member] = None):
 
     embed = discord.Embed(
         title=f"💰 **{user.display_name.upper()}'S TREASURY** 💰",
-        description=f"``````",
+        description="``````",
         color=tier_color)
 
     embed.add_field(
         name="💎 **SPIRIT STONES**",
         value=f"`{balance:,} SS`",
+        inline=True)
+    
+    embed.add_field(
+        name="🏅 **WEALTH TIER**",
+        value=tier,
         inline=True)
 
     embed.set_thumbnail(url=user.avatar.url if user.avatar else None)
