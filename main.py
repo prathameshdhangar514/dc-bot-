@@ -4041,7 +4041,7 @@ async def unlucky(ctx):
     embed.add_field(
         name="👹 **VOID ANALYSIS**",
         value=
-        f"``````\n{void_status}",
+        f"``````\n{void_status}\nAverage Loss: {average_loss:,} SP\nThreat Level: {status_color}",
         inline=False)
     embed.add_field(
         name="⚠️ **COSMIC WARNING**",
@@ -4106,7 +4106,8 @@ async def emergency_repair(ctx):
             logger.error(f"❌ Failed to edit final emergency repair message: {error}")
 
     except Exception as e:
-        embed.description = "``````"
+        logger.error(f"❌ Emergency repair failed: {e}")
+        embed.description = f"``````\n💀 *Emergency repair failed: {str(e)[:100]}...*"
         embed.color = 0xFF0000
         result, error = await safe_api_call(message.edit, embed=embed)
         if error:
@@ -4184,7 +4185,7 @@ async def lose(ctx, member: Optional[discord.Member] = None):
         embed.add_field(
             name="📊 **GAMBLING STATISTICS**",
             value=
-            "``````",
+            f"``````\nTotal Gambled: {total_gambled:,} SP\nLoss Rate: {loss_percentage:.1f}%\nRisk Level: {'High' if loss_percentage > 60 else 'Medium' if loss_percentage > 40 else 'Low'}",
             inline=False)
     # Motivational message based on performance
     if net_result > 0:
