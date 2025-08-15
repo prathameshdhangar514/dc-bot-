@@ -2625,11 +2625,11 @@ async def daily(ctx):
                 last_time = last_time.replace(tzinfo=timezone.utc)
             delta = (now - last_time).days
             if delta == 0:
-                remaining = 24 - (now - last_time).seconds // 3600
+                #remaining = 24 - (now - last_time).seconds // 3600
                 embed = discord.Embed(
                     title="⏰ **TEMPORAL LOCK ACTIVE**",
                     description=
-                    f"``````\n🌟 *The cosmic energy needs time to flow through your soul...*",
+                    "``````\n🌟 *The cosmic energy needs time to flow through your soul...*",
                     color=0x2B2D42)
                 embed.set_footer(text="⚡ Daily energy recharging...",
                                  icon_url=ctx.author.avatar.url
@@ -2853,7 +2853,7 @@ async def cloudbackup(ctx):
         if backup_file:
             # Try to upload to GitHub
             github_success = False
-            github_error = "Not configured"
+            _github_error = "Not configured"
             if github_backup:
                 # Update embed to show GitHub upload in progress
                 embed.description = "``````\n☁️ *Transferring cosmic data to the eternal vault...*"
@@ -2865,8 +2865,8 @@ async def cloudbackup(ctx):
                 if success:
                     github_success = True
                 else:
-                    github_error = result_msg
-
+                    github_success = False
+                    _github_error = result_msg
             # Create final success embed
             embed = discord.Embed(
                 title="✅ **Cloud Backup Created**",
@@ -2876,7 +2876,7 @@ async def cloudbackup(ctx):
 
             embed.add_field(
                 name="📁 **Local File**",
-                value=f"``````",
+                value="``````",
                 inline=True)
 
             # GitHub status
@@ -2887,14 +2887,14 @@ async def cloudbackup(ctx):
             else:
                 embed.add_field(
                     name="☁️ **GitHub Cloud**",
-                    value=f"``````",
+                    value="``````",
                     inline=True)
 
             # Database statistics
-            file_size = os.path.getsize(backup_file)
+            _file_size = os.path.getsize(backup_file)
             embed.add_field(
                 name="📊 **Backup Statistics**",
-                value=f"``````",
+                value="``````",
                 inline=False)
             embed.set_footer(
                 text="💫 Your cosmic data is now safely preserved in the eternal vault",
@@ -2903,7 +2903,7 @@ async def cloudbackup(ctx):
             embed = discord.Embed(
                 title="❌ **Backup Failed**",
                 description=
-                "``````\n💀 *Failed to create backup. Check logs for details.*",
+                "``````\n💀 *Failed to create local backup. Check logs for details.*",
                 color=0xFF0000)
     except Exception as e:
         embed = discord.Embed(
@@ -3101,17 +3101,17 @@ async def sendsp(ctx, member: discord.Member, amount: int):
         embed.add_field(
             name="👑 **SUPREME OWNER**",
             value=
-            f"``````",
+            "``````",
             inline=True)
         embed.add_field(
             name="🎯 **BLESSED RECIPIENT**",
-            value=f"``````",
+            value="``````",
             inline=True)
         embed.add_field(name="⚡ **SPIRIT POINTS GRANTED**",
-                        value=f"``````",
+                        value="``````",
                         inline=False)
         embed.add_field(name="🔋 **NEW SP BALANCE**",
-                        value=f"``````",
+                        value="``````",
                         inline=False)
         embed.set_footer(
             text="👑 Supreme Owner Privilege • Spirit Point Grant System",
@@ -3268,7 +3268,7 @@ async def apistatus(ctx):
         embed.add_field(
             name="🌐 **Discord API Usage**",
             value=
-            f"``````",
+            "``````",
             inline=False)
         embed.add_field(
             name="⏰ **Command Cooldowns**",
@@ -3311,17 +3311,17 @@ async def backupstatus(ctx):
             success, github_files = github_backup.list_github_backups()
             if success and github_files:
                 github_backups = github_files[:5]  # Show latest 5
-                latest_github = github_files[0]
+                _latest_github = github_files[0]
                 embed.add_field(
                     name="☁️ **GitHub Cloud Storage**",
                     value=
-                    f"``````",
+                    "``````",
                     inline=False)
                 # List GitHub backups
-                github_list = "\n".join(
+                _github_list = "\n".join(
                     [f"☁️ {backup['name']}" for backup in github_backups])
                 embed.add_field(name="📋 **Recent GitHub Backups**",
-                                value=f"``````",
+                                value="``````",
                                 inline=True)
             else:
                 embed.add_field(
@@ -3346,22 +3346,22 @@ async def backupstatus(ctx):
             if backup_files:
                 latest_backup = backup_files[0]
                 latest_path = os.path.join("backups", latest_backup)
-                latest_time = datetime.datetime.fromtimestamp(
+                _latest_time = datetime.datetime.fromtimestamp(
                     os.path.getmtime(latest_path))
-                total_size = sum(
+                _total_size = sum(
                     os.path.getsize(os.path.join("backups", f))
                     for f in backup_files)
                 embed.add_field(
                     name="💾 **Local Storage**",
                     value=
-                    f"``````",
+                    "``````",
                     inline=True)
                 # List local backups
                 recent_local = backup_files[:5]
-                local_list = "\n".join(
+                _local_list = "\n".join(
                     [f"💾 {backup}" for backup in recent_local])
                 embed.add_field(name="📋 **Recent Local Backups**",
-                                value=f"``````",
+                                value="``````",
                                 inline=True)
             else:
                 embed.add_field(name="💾 **Local Storage**",
@@ -3374,8 +3374,8 @@ async def backupstatus(ctx):
 
         # Current database info
         if os.path.exists(DB_FILE):
-            current_size = os.path.getsize(DB_FILE)
-            current_time = datetime.datetime.fromtimestamp(
+            _current_size = os.path.getsize(DB_FILE)
+            _current_time = datetime.datetime.fromtimestamp(
                 os.path.getmtime(DB_FILE))
             embed.add_field(
                 name="🗄️ **Current Database**",
@@ -3797,17 +3797,17 @@ async def givess(ctx, member: discord.Member, amount: int):
         embed.add_field(
             name="👑 **ADMINISTRATOR**",
             value=
-            f"``````",
+            "``````",
             inline=True)
         embed.add_field(
             name="🎯 **RECIPIENT**",
-            value=f"``````",
+            value="``````",
             inline=True)
         embed.add_field(name="💰 **AMOUNT GRANTED**",
-                        value=f"``````",
+                        value="``````",
                         inline=False)
         embed.add_field(name="💎 **NEW BALANCE**",
-                        value=f"``````",
+                        value="``````",
                         inline=False)
         embed.set_footer(
             text="⚡ Divine Administrative System ⚡",
@@ -3871,17 +3871,17 @@ async def takess(ctx, member: discord.Member, amount: int):
         color=0xFF1744)
     embed.add_field(
         name="👑 **ADMINISTRATOR**",
-        value=f"``````",
+        value="``````",
         inline=True)
     embed.add_field(
         name="🎯 **TARGET**",
-        value=f"``````",
+        value="``````",
         inline=True)
     embed.add_field(name="💸 **AMOUNT REMOVED**",
-                    value=f"``````",
+                    value="``````",
                     inline=False)
     embed.add_field(name="💔 **REMAINING BALANCE**",
-                    value=f"``````",
+                    value="``````",
                     inline=False)
     embed.set_footer(
         text="⚡ Divine Administrative System ⚡",
@@ -3960,12 +3960,12 @@ async def lucky(ctx):
     embed.add_field(
         name="🌟 **COSMIC ENERGY POOL**",
         value=
-        f"``````\n*The accumulated power of the realm's elite...*",
+        "``````\n*The accumulated power of the realm's elite...*",
         inline=False)
     embed.add_field(
         name="🔮 **FORTUNE INSIGHT**",
         value=
-        f"``````",
+        "``````",
         inline=False)
     embed.set_footer(
         text="🍀 The universe reveals its secrets to those who seek",
@@ -4021,7 +4021,7 @@ async def unlucky(ctx):
     embed.add_field(
         name="🌑 **TOTAL DEVASTATION**",
         value=
-        f"``````\n*The accumulated suffering feeds the endless void...*",
+        "``````\n*The accumulated suffering feeds the endless void...*",
         inline=False)
     # Calculate average loss and provide insight
     average_loss = total_losses // len(top_losers) if top_losers else 0
@@ -4105,7 +4105,7 @@ async def emergency_repair(ctx):
             logger.error(f"❌ Failed to edit final emergency repair message: {error}")
 
     except Exception as e:
-        embed.description = f"``````"
+        embed.description = "``````"
         embed.color = 0xFF0000
         result, error = await safe_api_call(message.edit, embed=embed)
         if error:
@@ -4166,15 +4166,15 @@ async def lose(ctx, member: Optional[discord.Member] = None):
         f"``````\n{loss_tier} • *The darkness remembers every sacrifice...*",
         color=tier_color)
     embed.add_field(name="💀 **LOSSES TO THE VOID**",
-                    value=f"``````",
+                    value="``````",
                     inline=True)
     embed.add_field(name="🏆 **GAINS FROM FORTUNE**",
-                    value=f"``````",
+                    value="``````",
                     inline=True)
     embed.add_field(
         name="⚖️ **NET RESULT**",
         value=
-        f"``````",
+        "``````",
         inline=False)
     # Loss ratio calculation
     total_gambled = wins + losses
@@ -4183,7 +4183,7 @@ async def lose(ctx, member: Optional[discord.Member] = None):
         embed.add_field(
             name="📊 **GAMBLING STATISTICS**",
             value=
-            f"``````",
+            "``````",
             inline=False)
     # Motivational message based on performance
     if net_result > 0:
