@@ -3046,7 +3046,7 @@ async def sendsp(ctx, member: discord.Member, amount: int):
             embed = discord.Embed(
                 title="👑 **OWNER ACCESS REQUIRED** 👑",
                 description=(
-                    "```
+                    "```\n"
                     "⚡ This power belongs to the supreme ruler alone...\n"
                     "```"),
                 color=0xFF0000)
@@ -3102,7 +3102,7 @@ async def sendsp(ctx, member: discord.Member, amount: int):
         embed = discord.Embed(
             title="👑 **DIVINE SP BLESSING GRANTED** 👑",
             description=(
-                "```
+                "```\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 "✨ The Owner channels raw spiritual energy ✨\n"
                 "```"),
