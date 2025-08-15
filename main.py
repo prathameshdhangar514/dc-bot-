@@ -2642,10 +2642,10 @@ async def daily(ctx):
                 remaining = 24 - (now - last_time).seconds // 3600
                 embed = discord.Embed(
                     title="⏰ **TEMPORAL LOCK ACTIVE**",
-                    description=f"``````",
+                    description=f"``````\n⏰ *Time remaining: {remaining} hours*\n💫 *The cosmic energies must recharge...*",
                     color=0x2B2D42,
                 )
-                embed.set_footer(text="Daily energy re-charging …")
+                embed.set_footer(text=f"Daily energy re-charging • {remaining}h remaining")
                 await light_safe_api_call(ctx.send, embed=embed)
                 return
             elif (now - last_time).days == 1:
@@ -2678,12 +2678,12 @@ async def daily(ctx):
 
         embed = discord.Embed(
             title="⚡ **DAILY ENERGY HARVESTED** ⚡",
-            description=f"``````",
+            description="``````\n✨ *Spiritual energy flows into your core...*",
             color=0x8A2BE2 if streak >= 3 else 0x4169E1,
         )
         embed.add_field(
             name="🎁 **REWARD BREAKDOWN**",
-            value=f"{role_bonus}",
+            value=f"``````\n{role_bonus}\nReward: {reward:,} SP",
             inline=False,
         )
         embed.add_field(
