@@ -4271,17 +4271,16 @@ def run_flask():
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)
 
-
-# ==== Main Execution ====
+# == Main Execution ==
 if __name__ == "__main__":
     # Start Flask in a separate thread
     flask_thread = Thread(target=run_flask, daemon=True)
     flask_thread.start()
     logger.info("🌐 Flask server started")
 
-    # Run the bot with auto-restart capability
+    # Run the bot with smart restart capability
     max_restart_attempts = 10
-    restart_delay = 30  # seconds between restarts
+    restart_delay = 30
 
     for restart_attempt in range(max_restart_attempts):
         try:
@@ -4289,8 +4288,6 @@ if __name__ == "__main__":
                 f"🔄 Bot startup attempt {restart_attempt + 1}/{max_restart_attempts}"
             )
             asyncio.run(main())
-
-            # If we reach here, the bot shut down normally
             logger.info("✅ Bot shut down normally")
             break
 
@@ -4299,13 +4296,31 @@ if __name__ == "__main__":
             break
 
         except Exception as e:
-            logger.error(f"❌ Bot crashed: {e}")
+            error_msg = str(e).lower()
 
-            if restart_attempt < max_restart_attempts - 1:
-                logger.info(f"🔄 Restarting in {restart_delay} seconds...")
-                time.sleep(restart_delay)
+            # Don't restart for authentication errors
+            if any(auth_error in error_msg for auth_error in 
+                   ['401', 'unauthorized', 'invalid token', 'login failure']):
+                logger.error("❌ Authentication error - check your Discord bot token")
+                logger.error("🔧 Fix your token in environment variables and redeploy")
+                break
 
-                # Exponential backoff for restart delay
-                restart_delay = min(restart_delay * 1.5, 300)  # Max 5 minutes
+            # Don't restart for rate limiting - wait longer
+            elif '429' in error_msg or 'rate limit' in error_msg:
+                if restart_attempt < max_restart_attempts - 1:
+                    rate_limit_delay = 300  # 5 minutes for rate limiting
+                    logger.error(f"❌ Rate limited - waiting {rate_limit_delay}s before retry")
+                    time.sleep(rate_limit_delay)
+                else:
+                    logger.error("❌ Persistent rate limiting - stopping bot")
+                    break
+
+            # Restart for other errors (network, temporary issues)
             else:
-                logger.error("❌ Max restart attempts exceeded")
+                logger.error(f"❌ Bot crashed: {e}")
+                if restart_attempt < max_restart_attempts - 1:
+                    logger.info(f"🔄 Restarting in {restart_delay} seconds...")
+                    time.sleep(restart_delay)
+                    restart_delay = min(restart_delay * 1.5, 300)
+                else:
+                    logger.error("❌ Max restart attempts exceeded")
