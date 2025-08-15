@@ -3961,7 +3961,7 @@ async def lucky(ctx):
     embed.add_field(
         name="🌟 **COSMIC ENERGY POOL**",
         value=
-        "``````\n*The accumulated power of the realm's elite...*",
+        f"``````\n💫 **Total Elite SP:** {total_sp:,}\n*The accumulated power of the realm's elite...*",
         inline=False)
     embed.add_field(
         name="🔮 **FORTUNE INSIGHT**",
